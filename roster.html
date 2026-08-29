@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
+<title>Match Day Roster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --pitch-deep:#12312A;
+    --pitch:#1B4D3E;
+    --pitch-stripe:#194533;
+    --line:#EAF2ED;
+    --chalk:#F5F7F2;
+    --gold:#E8B923;
+    --slate:#42545A;
+    --slate-light:#7C8B8F;
+    --ink:#0F1D18;
+    --danger:#C1462F;
+    --card:#FFFFFF;
+    --bg:#EEF1EC;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color: transparent;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:'Inter',sans-serif;}
+  body{padding-bottom:88px;}
+  h1,h2,h3,.display{font-family:'Anton',sans-serif; font-weight:400; letter-spacing:0.02em; text-transform:uppercase;}
+  #app{max-width:520px;margin:0 auto;min-height:100vh;background:var(--bg);position:relative;}
+
+  header.topbar{
+    background:var(--pitch-deep);
+    color:var(--chalk);
+    padding:22px 20px 18px;
+    position:sticky; top:0; z-index:20;
+    border-bottom:3px solid var(--gold);
+  }
+  header.topbar .eyebrow{font-size:11px;letter-spacing:0.18em;color:var(--gold);font-weight:700;text-transform:uppercase;}
+  header.topbar h1{font-size:26px;margin:2px 0 0;color:var(--chalk);}
+
+  nav.tabs{display:flex;background:var(--pitch);position:sticky;top:78px;z-index:19;}
+  nav.tabs button{
+    flex:1;background:none;border:none;color:var(--chalk);opacity:0.65;
+    font-family:'Inter';font-weight:700;font-size:12.5px;letter-spacing:0.05em;text-transform:uppercase;
+    padding:12px 4px;cursor:pointer;border-bottom:3px solid transparent;
+  }
+  nav.tabs button.active{opacity:1;border-bottom-color:var(--gold);}
+
+  main{padding:16px;}
+  .card{background:var(--card);border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 1px 2px rgba(15,29,24,0.06);}
+  .card h2{font-size:18px;margin:0 0 12px;color:var(--pitch-deep);}
+  .muted{color:var(--slate-light);font-size:13px;line-height:1.5;}
+  label.field-label{display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--slate);margin:0 0 6px;}
+  input[type=text], input[type=date], select{
+    width:100%;border:1.5px solid #D8DEDA;border-radius:9px;padding:10px 12px;font-size:15px;font-family:'Inter';
+    background:#FBFCFA;color:var(--ink);
+  }
+  input:focus, select:focus{outline:none;border-color:var(--pitch);}
+  .row{display:flex;gap:8px;align-items:center;}
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    background:var(--pitch);color:var(--chalk);border:none;border-radius:10px;
+    padding:11px 16px;font-weight:700;font-size:14px;letter-spacing:0.02em;cursor:pointer;
+  }
+  .btn:active{transform:scale(0.98);}
+  .btn.secondary{background:#E4E9E4;color:var(--pitch-deep);}
+  .btn.gold{background:var(--gold);color:var(--pitch-deep);}
+  .btn.danger{background:none;color:var(--danger);padding:6px 8px;font-size:13px;}
+  .btn.full{width:100%;}
+  .btn:disabled{opacity:0.4;}
+
+  .player-chip{
+    display:flex;align-items:center;justify-content:space-between;
+    background:#F6F8F5;border:1.5px solid #E4E9E4;border-radius:10px;
+    padding:10px 12px;margin-bottom:8px;
+  }
+  .player-chip .name{font-weight:600;font-size:15px;}
+  .attend-row{display:flex;align-items:center;justify-content:space-between;padding:9px 2px;border-bottom:1px solid #EEF1EC;}
+  .attend-row:last-child{border-bottom:none;}
+  .toggle{
+    width:44px;height:26px;border-radius:20px;background:#D8DEDA;position:relative;cursor:pointer;flex-shrink:0;transition:background 0.15s;
+  }
+  .toggle.on{background:var(--pitch);}
+  .toggle .knob{position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:white;transition:left 0.15s;box-shadow:0 1px 2px rgba(0,0,0,0.25);}
+  .toggle.on .knob{left:20px;}
+
+  .stepper{display:flex;align-items:center;gap:14px;}
+  .stepper button{width:36px;height:36px;border-radius:9px;border:1.5px solid #D8DEDA;background:#FBFCFA;font-size:18px;font-weight:700;cursor:pointer;color:var(--pitch-deep);}
+  .stepper .val{font-family:'Anton';font-size:22px;min-width:24px;text-align:center;color:var(--pitch-deep);}
+
+  .pitch-wrap{background:var(--pitch);border-radius:14px;padding:14px;position:relative;overflow:hidden;}
+  .pitch-wrap svg{display:block;width:100%;height:auto;}
+  .bubble-label{font-family:'Inter';font-weight:800;font-size:10.5px;fill:var(--pitch-deep);}
+  .bubble-pos{font-family:'Inter';font-weight:600;font-size:6.5px;letter-spacing:0.06em;fill:var(--slate);}
+
+  .bench-strip{margin-top:10px;padding:12px;background:#EDF3EC;border-radius:12px;}
+  .bench-strip .lbl{font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:var(--slate);margin-bottom:8px;}
+  .bench-chips{display:flex;flex-wrap:wrap;gap:6px;}
+  .bench-chip{background:var(--card);border:1.5px solid #D8DEDA;border-radius:20px;padding:6px 12px;font-size:13px;font-weight:600;color:var(--slate);}
+
+  .shift-tabs{display:flex;gap:6px;margin:14px 0 10px;flex-wrap:wrap;}
+  .shift-tabs button{
+    border:1.5px solid #D8DEDA;background:var(--card);border-radius:8px;padding:8px 12px;
+    font-weight:700;font-size:12.5px;cursor:pointer;color:var(--slate);
+  }
+  .shift-tabs button.active{background:var(--pitch);color:var(--chalk);border-color:var(--pitch);}
+  .half-header{display:flex;align-items:center;justify-content:space-between;margin:18px 0 4px;}
+  .half-header h3{font-size:15px;margin:0;color:var(--pitch-deep);}
+  .gk-note{font-size:12px;color:var(--slate-light);}
+
+  .game-list-item{display:flex;align-items:center;justify-content:space-between;padding:13px 4px;border-bottom:1px solid #EEF1EC;cursor:pointer;}
+  .game-list-item:last-child{border-bottom:none;}
+  .game-list-item .date{font-weight:700;font-size:15px;color:var(--pitch-deep);}
+  .game-list-item .sub{font-size:12.5px;color:var(--slate-light);}
+
+  .empty-state{text-align:center;padding:36px 16px;color:var(--slate-light);}
+  .empty-state .display{font-size:20px;color:var(--pitch-deep);margin-bottom:6px;}
+
+  .toast{
+    position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
+    background:var(--pitch-deep);color:var(--chalk);padding:11px 20px;border-radius:30px;
+    font-size:13.5px;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,0.2);z-index:50;
+    max-width:88%;text-align:center;
+  }
+  .warn-banner{background:#FCEFE9;border:1.5px solid #F0C4B0;color:var(--danger);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px;}
+  .swap-hint{font-size:12px;color:var(--slate-light);margin:6px 2px 0;}
+  .selected-for-swap{outline:2.5px solid var(--gold);outline-offset:1px;}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf-autotable.min.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* ---------- Storage helpers ----------
+   Uses Claude's cloud storage when this app is viewed inside Claude.
+   Falls back to the browser's own localStorage when opened as a
+   standalone file (e.g. tapped open directly in Safari or Chrome),
+   since window.storage only exists inside Claude's artifact host. */
+const CLOUD = (typeof window.storage !== 'undefined' && window.storage);
+
+async function storageGet(key){
+  if(CLOUD){
+    try{ const r = await window.storage.get(key, false); return r ? r.value : null; }
+    catch(e){ return null; }
+  }
+  try{ return localStorage.getItem(key); }catch(e){ return null; }
+}
+async function storageSet(key, value){
+  if(CLOUD){
+    try{ await window.storage.set(key, value, false); return true; }catch(e){ return false; }
+  }
+  try{ localStorage.setItem(key, value); return true; }catch(e){ return false; }
+}
+async function loadRoster(){
+  const v = await storageGet('roster');
+  try{ return v ? JSON.parse(v) : []; }catch(e){ return []; }
+}
+async function saveRoster(list){ await storageSet('roster', JSON.stringify(list)); }
+async function loadGames(){
+  const v = await storageGet('games');
+  try{ return v ? JSON.parse(v) : {}; }catch(e){ return {}; }
+}
+async function saveGames(obj){ await storageSet('games', JSON.stringify(obj)); }
+
+/* ---------- App state ---------- */
+const State = {
+  tab: 'roster',
+  players: [],
+  games: {},
+  loaded: false,
+  // new-game draft
+  draft: null,
+  activeGameDate: null, // when viewing a saved game
+  viewingHalf: 0,
+  viewingShift: 0,
+  swapSelection: null,
+  toastMsg: null,
+};
+
+const POSITION_SLOTS = [
+  {code:'D1', label:'Defender', short:'D', zone:'Defense'},
+  {code:'D2', label:'Defender', short:'D', zone:'Defense'},
+  {code:'M',  label:'Midfielder', short:'M', zone:'Midfield'},
+  {code:'W1', label:'Wing', short:'W', zone:'Attack'},
+  {code:'W2', label:'Wing', short:'W', zone:'Attack'},
+  {code:'F',  label:'Forward', short:'F', zone:'Attack'},
+];
+
+function uid(){ return Math.random().toString(36).slice(2,9); }
+function shuffle(arr){ const a=arr.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function playerName(id){
+  const p = State.players.find(p=>p.id===id);
+  if(!p) return '—';
+  return p.lastInitial ? (p.name + ' ' + p.lastInitial.toUpperCase() + '.') : p.name;
+}
+function playerInitials(id){
+  const p = State.players.find(p=>p.id===id);
+  if(!p) return '?';
+  const first = (p.name[0]||'?').toUpperCase();
+  const second = p.lastInitial ? p.lastInitial[0].toUpperCase() : (p.name[1]||'').toUpperCase();
+  return first + second;
+}
+
+function showToast(msg){
+  State.toastMsg = msg;
+  render();
+  setTimeout(()=>{ State.toastMsg=null; render(); }, 2000);
+}
+
+/* ---------- Rotation engine ---------- */
+function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
+  const present = presentIds.map(id=>({id}));
+  const state = {};
+  present.forEach(p=> state[p.id] = {shiftsPlayed:0, lastZone:null, consecutiveOnField:0});
+
+  const halfDefs = [ {gk:gkHalf1}, {gk:gkHalf2} ];
+  const halves = [];
+
+  halfDefs.forEach(hd=>{
+    const gkId = hd.gk;
+    const fieldEligible = present.filter(p=>p.id!==gkId);
+    const shifts = [];
+    const cap = shiftsPerHalf >= 3 ? 2 : 1;
+
+    for(let s=0; s<shiftsPerHalf; s++){
+      let mustBench = fieldEligible.filter(p=> state[p.id].consecutiveOnField >= cap);
+      let pool = fieldEligible.filter(p=> !mustBench.includes(p));
+      pool = shuffle(pool).sort((a,b)=> state[a.id].shiftsPlayed - state[b.id].shiftsPlayed);
+
+      let onField = pool.slice(0,6);
+      if(onField.length < 6){
+        const need = 6 - onField.length;
+        const extra = shuffle(mustBench).sort((a,b)=> state[a.id].consecutiveOnField - state[b.id].consecutiveOnField).slice(0,need);
+        onField = onField.concat(extra);
+      }
+      const benched = fieldEligible.filter(p=> !onField.includes(p));
+
+      const slots = shuffle(POSITION_SLOTS.slice());
+      let remaining = shuffle(onField.slice());
+      const assign = {};
+      slots.forEach(slot=>{
+        let idx = remaining.findIndex(p=> state[p.id].lastZone !== slot.zone);
+        let chosen;
+        if(idx >= 0){ chosen = remaining.splice(idx,1)[0]; }
+        else { chosen = remaining.splice(0,1)[0]; }
+        assign[slot.code] = chosen.id;
+      });
+
+      onField.forEach(p=>{ state[p.id].shiftsPlayed++; state[p.id].consecutiveOnField++; });
+      benched.forEach(p=>{ state[p.id].consecutiveOnField = 0; });
+      Object.entries(assign).forEach(([code,pid])=>{
+        const slot = POSITION_SLOTS.find(sl=>sl.code===code);
+        state[pid].lastZone = slot.zone;
+      });
+
+      shifts.push({ assign, benched: benched.map(p=>p.id) });
+    }
+    fieldEligible.forEach(p=> state[p.id].consecutiveOnField = 0);
+    halves.push({ gkId, shifts });
+  });
+
+  return halves;
+}
+
+/* ---------- Rendering ---------- */
+function render(){
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    ${headerHtml()}
+    ${tabsHtml()}
+    <main>${mainHtml()}</main>
+    ${State.toastMsg ? `<div class="toast">${State.toastMsg}</div>` : ''}
+  `;
+}
+
+function headerHtml(){
+  const titles = {roster:'Team Roster', newgame:'New Match Roster', saved:'Saved Rosters'};
+  return `
+    <header class="topbar">
+      <div class="eyebrow">Match Day</div>
+      <h1>${titles[State.tab]}</h1>
+    </header>
+  `;
+}
+
+function tabsHtml(){
+  const tabs = [ ['roster','Roster'], ['newgame','New Game'], ['saved','Saved'] ];
+  return `<nav class="tabs">${tabs.map(([k,label])=>
+    `<button class="${State.tab===k?'active':''}" onclick="setTab('${k}')">${label}</button>`
+  ).join('')}</nav>`;
+}
+
+function mainHtml(){
+  if(State.tab==='roster') return rosterViewHtml();
+  if(State.tab==='newgame') return newGameViewHtml();
+  if(State.tab==='saved') return savedViewHtml();
+  return '';
+}
+
+/* ----- Roster tab ----- */
+function rosterViewHtml(){
+  return `
+    <div class="card">
+      <h2>Add a Player</h2>
+      <div class="row">
+        <input type="text" id="newPlayerInput" placeholder="First name" maxlength="24" style="flex:3;">
+        <input type="text" id="newPlayerLastInitial" placeholder="Last initial" maxlength="1" style="flex:1;text-align:center;text-transform:uppercase;">
+        <button class="btn" onclick="addPlayer()">Add</button>
+      </div>
+      <p class="muted" style="margin-top:6px;">Last initial helps tell kids with similar first names apart on the field diagram.</p>
+      <p class="muted" style="margin-top:8px;">${State.players.length} player${State.players.length===1?'':'s'} on the roster.</p>
+    </div>
+    <div class="card">
+      <h2>Players</h2>
+      ${State.players.length===0 ? `<p class="muted">No players yet — add your first player above.</p>` :
+        State.players.map(p=>`
+          <div class="player-chip">
+            <span class="name">${playerName(p.id)}</span>
+            <button class="btn danger" onclick="removePlayer('${p.id}')">Remove</button>
+          </div>
+        `).join('')
+      }
+    </div>
+  `;
+}
+
+function addPlayer(){
+  const input = document.getElementById('newPlayerInput');
+  const liInput = document.getElementById('newPlayerLastInitial');
+  const name = input.value.trim();
+  const lastInitial = liInput.value.trim().slice(0,1);
+  if(!name) return;
+  State.players.push({id: uid(), name, lastInitial});
+  saveRoster(State.players);
+  render();
+  showToast(name + (lastInitial? ' '+lastInitial.toUpperCase()+'.' : '') + ' added to roster');
+}
+function removePlayer(id){
+  const p = State.players.find(p=>p.id===id);
+  if(!confirm('Remove ' + (p?p.name:'this player') + ' from the roster?')) return;
+  State.players = State.players.filter(p=>p.id!==id);
+  saveRoster(State.players);
+  render();
+}
+
+/* ----- New Game tab ----- */
+function ensureDraft(){
+  if(!State.draft){
+    State.draft = {
+      date: new Date().toISOString().slice(0,10),
+      presentIds: State.players.map(p=>p.id),
+      gkHalf1: State.players[0] ? State.players[0].id : null,
+      gkHalf2: State.players[0] ? State.players[0].id : null,
+      shiftsPerHalf: 3,
+      generated: null,
+    };
+  }
+}
+
+function newGameViewHtml(){
+  ensureDraft();
+  const d = State.draft;
+  if(State.players.length < 7){
+    return `<div class="card"><p class="muted">You need at least 7 players on your roster (1 keeper + 6 field) before you can generate a game roster. Add players on the Roster tab.</p></div>`;
+  }
+  const presentPlayers = State.players.filter(p=> d.presentIds.includes(p.id));
+
+  let body = `
+    <div class="card">
+      <h2>Game Details</h2>
+      <label class="field-label">Game Date</label>
+      <input type="date" value="${d.date}" onchange="updateDraft('date', this.value)">
+    </div>
+
+    <div class="card">
+      <h2>Who's Here Today?</h2>
+      ${State.players.map(p=>`
+        <div class="attend-row">
+          <span class="name" style="font-weight:600;">${playerName(p.id)}</span>
+          <div class="toggle ${d.presentIds.includes(p.id)?'on':''}" onclick="togglePresent('${p.id}')">
+            <div class="knob"></div>
+          </div>
+        </div>
+      `).join('')}
+      <p class="muted" style="margin-top:8px;">${presentPlayers.length} present today.</p>
+    </div>
+  `;
+
+  if(presentPlayers.length < 7){
+    body += `<div class="warn-banner">Need at least 7 present players (1 keeper + 6 field) to generate a roster.</div>`;
+  } else {
+    body += `
+      <div class="card">
+        <h2>Goalkeepers</h2>
+        <label class="field-label">1st Half Keeper</label>
+        <select onchange="updateDraft('gkHalf1', this.value)">
+          ${presentPlayers.map(p=>`<option value="${p.id}" ${d.gkHalf1===p.id?'selected':''}>${playerName(p.id)}</option>`).join('')}
+        </select>
+        <div style="height:12px;"></div>
+        <label class="field-label">2nd Half Keeper</label>
+        <select onchange="updateDraft('gkHalf2', this.value)">
+          ${presentPlayers.map(p=>`<option value="${p.id}" ${d.gkHalf2===p.id?'selected':''}>${playerName(p.id)}</option>`).join('')}
+        </select>
+      </div>
+
+      <div class="card">
+        <h2>Shifts Per Half</h2>
+        <p class="muted" style="margin-top:-4px;margin-bottom:10px;">More shifts = more frequent rotation and shorter stretches on field.</p>
+        <div class="stepper">
+          <button onclick="updateDraft('shiftsPerHalf', ${Math.max(2,d.shiftsPerHalf-1)})">−</button>
+          <span class="val">${d.shiftsPerHalf}</span>
+          <button onclick="updateDraft('shiftsPerHalf', ${Math.min(5,d.shiftsPerHalf+1)})">+</button>
+        </div>
+      </div>
+
+      <button class="btn gold full" style="padding:14px;font-size:15px;" onclick="generateDraft()">Generate Roster</button>
+    `;
+  }
+
+  if(d.generated){
+    body += `<div style="height:18px;"></div>` + generatedRosterHtml(d.generated, d.presentIds, d.gkHalf1, d.gkHalf2, true, d.date) +
+      `<button class="btn full" style="margin-top:14px;" onclick="saveDraftGame()">Save This Roster</button>`;
+  }
+
+  return body;
+}
+
+function updateDraft(key, val){
+  ensureDraft();
+  if(key==='shiftsPerHalf') val = parseInt(val,10);
+  State.draft[key] = val;
+  State.draft.generated = null;
+  render();
+}
+function togglePresent(id){
+  ensureDraft();
+  const d = State.draft;
+  if(d.presentIds.includes(id)) d.presentIds = d.presentIds.filter(x=>x!==id);
+  else d.presentIds.push(id);
+  if(!d.presentIds.includes(d.gkHalf1)) d.gkHalf1 = d.presentIds[0] || null;
+  if(!d.presentIds.includes(d.gkHalf2)) d.gkHalf2 = d.presentIds[0] || null;
+  d.generated = null;
+  render();
+}
+function generateDraft(){
+  const d = State.draft;
+  d.generated = generateGameSchedule(d.presentIds, d.gkHalf1, d.gkHalf2, d.shiftsPerHalf);
+  State.viewingHalf = 0; State.viewingShift = 0; State.swapSelection = null;
+  render();
+}
+async function saveDraftGame(){
+  const d = State.draft;
+  if(State.games[d.date] && !confirm('A roster for ' + d.date + ' already exists. Overwrite it?')) return;
+  State.games[d.date] = {
+    date: d.date,
+    presentIds: d.presentIds,
+    gkHalf1: d.gkHalf1,
+    gkHalf2: d.gkHalf2,
+    shiftsPerHalf: d.shiftsPerHalf,
+    halves: d.generated,
+  };
+  await saveGames(State.games);
+  showToast('Roster saved for ' + d.date);
+  State.draft = null;
+  State.tab = 'saved';
+  render();
+}
+
+/* ----- Saved tab ----- */
+function savedViewHtml(){
+  const dates = Object.keys(State.games).sort((a,b)=> b.localeCompare(a));
+  if(dates.length===0){
+    return `<div class="empty-state"><div class="display">No Saved Rosters</div><p>Generate a roster on the New Game tab and save it to see it here.</p></div>`;
+  }
+  if(State.activeGameDate && State.games[State.activeGameDate]){
+    const g = State.games[State.activeGameDate];
+    return `
+      <button class="btn secondary" style="margin-bottom:12px;" onclick="closeGame()">← All Saved Rosters</button>
+      <div class="card">
+        <h2>${formatDate(g.date)}</h2>
+        <p class="muted">${g.presentIds.length} players present · ${g.shiftsPerHalf} shifts per half</p>
+      </div>
+      ${generatedRosterHtml(g.halves, g.presentIds, g.gkHalf1, g.gkHalf2, false, g.date)}
+      <button class="btn danger" style="margin-top:14px;" onclick="deleteGame('${g.date}')">Delete This Roster</button>
+    `;
+  }
+  return `<div class="card">${dates.map(dt=>{
+    const g = State.games[dt];
+    return `<div class="game-list-item" onclick="openGame('${dt}')">
+      <div><div class="date">${formatDate(dt)}</div><div class="sub">${g.presentIds.length} present · ${g.shiftsPerHalf} shifts/half</div></div>
+      <span style="color:var(--slate-light);font-size:18px;">›</span>
+    </div>`;
+  }).join('')}</div>`;
+}
+function formatDate(iso){
+  const [y,m,dd] = iso.split('-').map(Number);
+  const dt = new Date(y, m-1, dd);
+  return dt.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric', year:'numeric'});
+}
+function openGame(date){ State.activeGameDate = date; State.viewingHalf=0; State.viewingShift=0; State.swapSelection=null; render(); }
+function closeGame(){ State.activeGameDate = null; render(); }
+async function deleteGame(date){
+  if(!confirm('Delete the roster for ' + formatDate(date) + '? This cannot be undone.')) return;
+  delete State.games[date];
+  await saveGames(State.games);
+  State.activeGameDate = null;
+  render();
+}
+
+/* ----- Shared: generated roster (pitch diagram) renderer ----- */
+function generatedRosterHtml(halves, presentIds, gkHalf1, gkHalf2, editable, gameDate){
+  const half = halves[State.viewingHalf];
+  const shift = half.shifts[State.viewingShift];
+  const gkId = State.viewingHalf===0 ? gkHalf1 : gkHalf2;
+
+  window.__pdfExportData = { halves, gkHalf1, gkHalf2, gameDate };
+
+  let html = `
+    <div class="row" style="justify-content:flex-end;margin-bottom:8px;">
+      <button class="btn secondary" onclick="exportRosterPDF()">Export PDF</button>
+    </div>
+    <div class="half-header">
+      <h3>Half ${State.viewingHalf+1}</h3>
+      <span class="gk-note">Keeper: <strong>${playerName(gkId)}</strong></span>
+    </div>
+    <div class="shift-tabs">
+      ${[0,1].map(h=>`<button class="${State.viewingHalf===h?'active':''}" onclick="setHalf(${h})">Half ${h+1}</button>`).join('')}
+    </div>
+    <div class="shift-tabs">
+      ${half.shifts.map((_,i)=>`<button class="${State.viewingShift===i?'active':''}" onclick="setShift(${i})">Shift ${i+1}</button>`).join('')}
+    </div>
+    <div class="pitch-wrap">
+      ${pitchSvg(shift.assign, editable, gkId)}
+    </div>
+    <div class="bench-strip">
+      <div class="lbl">Bench — Shift ${State.viewingShift+1}</div>
+      <div class="bench-chips">
+        ${shift.benched.map(pid=>`<span class="bench-chip" ${editable?`onclick="selectSwap('bench','${pid}')"`:''}>${playerName(pid)}</span>`).join('')}
+      </div>
+    </div>
+    ${editable ? `<p class="swap-hint">Tap a player on the field, then tap another player (or a bench name) to swap them.</p>` : ''}
+  `;
+  return html;
+}
+
+function pitchSvg(assign, editable, gkId){
+  // simple 2-2-1 layout coordinates on a 100x140 viewbox pitch
+  const coords = {
+    D1: [30, 100], D2: [70, 100],
+    M:  [50, 72],
+    W1: [18, 42], W2: [82, 42],
+    F:  [50, 18],
+  };
+  let circles = '';
+  POSITION_SLOTS.forEach(slot=>{
+    const [x,y] = coords[slot.code];
+    const pid = assign[slot.code];
+    const sel = State.swapSelection && State.swapSelection.type==='field' && State.swapSelection.slot===slot.code;
+    circles += `
+      <g ${editable?`onclick="selectSwap('field','${slot.code}')"`:''} style="cursor:${editable?'pointer':'default'};">
+        <circle cx="${x}" cy="${y}" r="11" fill="${sel? '#FFF4CF':'var(--chalk,#F5F7F2)'}" stroke="${sel?'#E8B923':'#12312A'}" stroke-width="${sel?'2.2':'1'}"/>
+        <text x="${x}" y="${y-1.5}" text-anchor="middle" class="bubble-label">${playerInitials(pid)}</text>
+        <text x="${x}" y="${y+6.5}" text-anchor="middle" class="bubble-pos">${slot.short}</text>
+      </g>
+    `;
+  });
+  return `
+    <svg viewBox="0 0 100 140" xmlns="http://www.w3.org/2000/svg">
+      <rect x="2" y="2" width="96" height="136" fill="none" stroke="#EAF2ED" stroke-width="1" opacity="0.55"/>
+      <line x1="2" y1="70" x2="98" y2="70" stroke="#EAF2ED" stroke-width="0.7" opacity="0.4"/>
+      <circle cx="50" cy="70" r="10" fill="none" stroke="#EAF2ED" stroke-width="0.7" opacity="0.4"/>
+      <rect x="25" y="2" width="50" height="16" fill="none" stroke="#EAF2ED" stroke-width="0.7" opacity="0.4"/>
+      <rect x="25" y="122" width="50" height="16" fill="none" stroke="#EAF2ED" stroke-width="0.7" opacity="0.4"/>
+      ${circles}
+      <g>
+        <circle cx="50" cy="131" r="9" fill="#E8B923" stroke="#12312A" stroke-width="1"/>
+        <text x="50" y="129.5" text-anchor="middle" class="bubble-label" style="fill:#12312A;">${playerInitials(gkId)}</text>
+        <text x="50" y="136" text-anchor="middle" class="bubble-pos">GK</text>
+      </g>
+    </svg>
+  `;
+}
+function exportRosterPDF(){
+  const data = window.__pdfExportData;
+  if(!data || typeof window.jspdf === 'undefined'){ showToast('PDF export unavailable — check your connection and try again.'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const dateLabel = data.gameDate ? formatDate(data.gameDate) : 'Untitled Game';
+
+  doc.setFontSize(16);
+  doc.text('Match Day Roster', 14, 16);
+  doc.setFontSize(11);
+  doc.text(dateLabel, 14, 23);
+
+  let y = 30;
+  const gkByHalf = [data.gkHalf1, data.gkHalf2];
+
+  data.halves.forEach((half, hIdx)=>{
+    if(y > 260){ doc.addPage(); y = 16; }
+    doc.setFontSize(13);
+    doc.text('Half ' + (hIdx+1) + '  —  Keeper: ' + playerName(gkByHalf[hIdx]), 14, y);
+    y += 4;
+
+    const head = [['Shift','Defender','Defender','Midfielder','Wing','Wing','Forward','Bench']];
+    const body = half.shifts.map((shift, sIdx)=> [
+      String(sIdx+1),
+      playerName(shift.assign.D1),
+      playerName(shift.assign.D2),
+      playerName(shift.assign.M),
+      playerName(shift.assign.W1),
+      playerName(shift.assign.W2),
+      playerName(shift.assign.F),
+      shift.benched.map(pid=>playerName(pid)).join(', '),
+    ]);
+
+    doc.autoTable({
+      head, body, startY: y,
+      styles:{ fontSize:8, cellPadding:2 },
+      headStyles:{ fillColor:[27,77,62] },
+      columnStyles:{ 7:{ cellWidth:38 } },
+      margin:{ left:14, right:14 },
+    });
+    y = doc.lastAutoTable.finalY + 12;
+  });
+
+  const filename = 'roster-' + (data.gameDate || 'game') + '.pdf';
+  doc.save(filename);
+}
+
+function setHalf(h){ State.viewingHalf=h; State.viewingShift=0; State.swapSelection=null; render(); }
+function setShift(i){ State.viewingShift=i; State.swapSelection=null; render(); }
+
+function currentHalves(){
+  if(State.tab==='newgame') return State.draft.generated;
+  if(State.tab==='saved' && State.activeGameDate) return State.games[State.activeGameDate].halves;
+  return null;
+}
+function selectSwap(type, key){
+  if(!State.swapSelection){
+    State.swapSelection = {type, slot: type==='field'?key:null, pid: type==='bench'?key:null};
+    render();
+    return;
+  }
+  const halves = currentHalves();
+  const shift = halves[State.viewingHalf].shifts[State.viewingShift];
+  const a = State.swapSelection;
+  const b = {type, slot: type==='field'?key:null, pid: type==='bench'?key:null};
+
+  function getPid(sel){ return sel.type==='field' ? shift.assign[sel.slot] : sel.pid; }
+  function setPid(sel, pid){
+    if(sel.type==='field') shift.assign[sel.slot] = pid;
+    else {
+      const idx = shift.benched.indexOf(sel.pid);
+      if(idx>=0) shift.benched[idx] = pid;
+    }
+  }
+  const pidA = getPid(a);
+  const pidB = getPid(b);
+  setPid(a, pidB);
+  setPid(b, pidA);
+
+  State.swapSelection = null;
+  render();
+}
+
+function setTab(t){ State.tab = t; State.swapSelection=null; render(); }
+
+/* ---------- Init ---------- */
+async function init(){
+  State.players = await loadRoster();
+  State.games = await loadGames();
+  State.loaded = true;
+  render();
+}
+init();
+</script>
+</body>
+</html>

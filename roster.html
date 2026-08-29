@@ -126,7 +126,6 @@
   .selected-for-swap{outline:2.5px solid var(--gold);outline-offset:1px;}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf-autotable.min.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -581,50 +580,69 @@ function pitchSvg(assign, editable, gkId){
   `;
 }
 function exportRosterPDF(){
-  const data = window.__pdfExportData;
-  if(!data || typeof window.jspdf === 'undefined'){ showToast('PDF export unavailable — check your connection and try again.'); return; }
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF();
-  const dateLabel = data.gameDate ? formatDate(data.gameDate) : 'Untitled Game';
+  try{
+    const data = window.__pdfExportData;
+    if(!data || typeof window.jspdf === 'undefined'){
+      showToast('PDF export isn\'t ready yet — wait a second and try again.');
+      return;
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    const dateLabel = data.gameDate ? formatDate(data.gameDate) : 'Untitled Game';
+    const gkByHalf = [data.gkHalf1, data.gkHalf2];
+    const colHeaders = ['Shift','Def','Def','Mid','Wing','Wing','Fwd','Bench'];
+    const colX =       [14,     22,   40,   58,   76,    94,   112,  130];
+    const colWidth =    18;
+    const benchWidth =  62;
 
-  doc.setFontSize(16);
-  doc.text('Match Day Roster', 14, 16);
-  doc.setFontSize(11);
-  doc.text(dateLabel, 14, 23);
+    let y = 18;
+    doc.setFontSize(16);
+    doc.text('Match Day Roster', 14, y);
+    y += 7;
+    doc.setFontSize(11);
+    doc.text(dateLabel, 14, y);
+    y += 10;
 
-  let y = 30;
-  const gkByHalf = [data.gkHalf1, data.gkHalf2];
+    data.halves.forEach((half, hIdx)=>{
+      if(y > 260){ doc.addPage(); y = 18; }
+      doc.setFontSize(12);
+      doc.text('Half ' + (hIdx+1) + '  —  Keeper: ' + playerName(gkByHalf[hIdx]), 14, y);
+      y += 6;
 
-  data.halves.forEach((half, hIdx)=>{
-    if(y > 260){ doc.addPage(); y = 16; }
-    doc.setFontSize(13);
-    doc.text('Half ' + (hIdx+1) + '  —  Keeper: ' + playerName(gkByHalf[hIdx]), 14, y);
-    y += 4;
+      doc.setFontSize(8);
+      colHeaders.forEach((h,i)=> doc.text(h, colX[i], y));
+      y += 1.5;
+      doc.setLineWidth(0.2);
+      doc.line(14, y, 192, y);
+      y += 4;
 
-    const head = [['Shift','Defender','Defender','Midfielder','Wing','Wing','Forward','Bench']];
-    const body = half.shifts.map((shift, sIdx)=> [
-      String(sIdx+1),
-      playerName(shift.assign.D1),
-      playerName(shift.assign.D2),
-      playerName(shift.assign.M),
-      playerName(shift.assign.W1),
-      playerName(shift.assign.W2),
-      playerName(shift.assign.F),
-      shift.benched.map(pid=>playerName(pid)).join(', '),
-    ]);
+      half.shifts.forEach((shift, sIdx)=>{
+        const rowVals = [
+          String(sIdx+1),
+          playerName(shift.assign.D1),
+          playerName(shift.assign.D2),
+          playerName(shift.assign.M),
+          playerName(shift.assign.W1),
+          playerName(shift.assign.W2),
+          playerName(shift.assign.F),
+          shift.benched.map(pid=>playerName(pid)).join(', ') || '—',
+        ];
+        const wrapped = rowVals.map((val,i)=> doc.splitTextToSize(val, i===7 ? benchWidth : colWidth));
+        const lineCount = Math.max.apply(null, wrapped.map(w=>w.length));
+        const rowHeight = Math.max(6, lineCount*3.6 + 1.5);
 
-    doc.autoTable({
-      head, body, startY: y,
-      styles:{ fontSize:8, cellPadding:2 },
-      headStyles:{ fillColor:[27,77,62] },
-      columnStyles:{ 7:{ cellWidth:38 } },
-      margin:{ left:14, right:14 },
+        if(y + rowHeight > 280){ doc.addPage(); y = 18; }
+        wrapped.forEach((lines,i)=> doc.text(lines, colX[i], y));
+        y += rowHeight;
+      });
+      y += 8;
     });
-    y = doc.lastAutoTable.finalY + 12;
-  });
 
-  const filename = 'roster-' + (data.gameDate || 'game') + '.pdf';
-  doc.save(filename);
+    doc.save('roster-' + (data.gameDate || 'game') + '.pdf');
+  }catch(err){
+    console.error(err);
+    showToast('Could not create the PDF — please try again.');
+  }
 }
 
 function setHalf(h){ State.viewingHalf=h; State.viewingShift=0; State.swapSelection=null; render(); }

@@ -31,13 +31,13 @@
     background:var(--pitch-deep);
     color:var(--chalk);
     padding:22px 20px 18px;
-    position:sticky; top:0; z-index:20;
     border-bottom:3px solid var(--gold);
   }
   header.topbar .eyebrow{font-size:11px;letter-spacing:0.18em;color:var(--gold);font-weight:700;text-transform:uppercase;}
   header.topbar h1{font-size:26px;margin:2px 0 0;color:var(--chalk);}
 
-  nav.tabs{display:flex;background:var(--pitch);position:sticky;top:78px;z-index:19;}
+  .sticky-top{position:sticky;top:0;z-index:20;}
+  nav.tabs{display:flex;background:var(--pitch);}
   nav.tabs button{
     flex:1;background:none;border:none;color:var(--chalk);opacity:0.65;
     font-family:'Inter';font-weight:700;font-size:12.5px;letter-spacing:0.05em;text-transform:uppercase;
@@ -136,6 +136,14 @@
   .theme-row{display:flex;gap:10px;flex-wrap:wrap;}
   .theme-swatch{width:36px;height:36px;border-radius:50%;border:2.5px solid #E4E9E4;cursor:pointer;padding:0;}
   .theme-swatch.selected{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold) inset, 0 0 0 1px var(--gold);}
+
+  .score-big{display:flex;align-items:center;justify-content:center;gap:18px;margin-top:14px;}
+  .score-side{text-align:center;flex:1;}
+  .score-label{font-size:12px;font-weight:700;color:var(--slate);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:2px;}
+  .score-num{font-family:'Anton';font-size:44px;color:var(--pitch-deep);line-height:1;}
+  .score-sep{font-family:'Anton';font-size:30px;color:var(--slate-light);}
+  .goal-row{display:flex;align-items:center;justify-content:space-between;padding:9px 2px;border-bottom:1px solid #EEF1EC;font-size:14px;font-weight:600;}
+  .goal-row:last-child{border-bottom:none;}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
@@ -192,6 +200,7 @@ const State = {
   viewingHalf: 0,
   viewingShift: 0,
   swapSelection: null,
+  showScorerPicker: false,
 };
 
 const POSITION_SLOTS = [
@@ -346,14 +355,16 @@ function render(){
   document.title = State.settings.teamName ? (State.settings.teamName + ' — Roster') : 'Match Day Roster';
   const app = document.getElementById('app');
   app.innerHTML = `
-    ${headerHtml()}
-    ${tabsHtml()}
+    <div class="sticky-top">
+      ${headerHtml()}
+      ${tabsHtml()}
+    </div>
     <main>${mainHtml()}</main>
   `;
 }
 
 function headerHtml(){
-  const titles = {roster:'Team Roster', newgame:'New Match Roster', saved:'Saved Rosters'};
+  const titles = {roster:'Team Roster', newgame:'New Match Roster', saved:'Saved Rosters', live:'Live Game'};
   const eyebrow = State.settings.teamName ? State.settings.teamName.toUpperCase() : 'MATCH DAY';
   return `
     <header class="topbar">
@@ -364,6 +375,7 @@ function headerHtml(){
 }
 
 function tabsHtml(){
+  if(State.tab==='live') return '';
   const tabs = [ ['roster','Roster'], ['newgame','New Game'], ['saved','Saved'] ];
   return `<nav class="tabs">${tabs.map(([k,label])=>
     `<button class="${State.tab===k?'active':''}" onclick="setTab('${k}')">${label}</button>`
@@ -374,6 +386,7 @@ function mainHtml(){
   if(State.tab==='roster') return rosterViewHtml();
   if(State.tab==='newgame') return newGameViewHtml();
   if(State.tab==='saved') return savedViewHtml();
+  if(State.tab==='live') return liveGameViewHtml();
   return '';
 }
 
@@ -583,11 +596,16 @@ function savedViewHtml(){
   }
   if(State.activeGameDate && State.games[State.activeGameDate]){
     const g = State.games[State.activeGameDate];
+    ensureLiveGame(g);
+    const total = computeScore(g.liveGame.goals);
+    const hasScore = g.liveGame.goals.length > 0;
     return `
       <button class="btn secondary" style="margin-bottom:12px;" onclick="closeGame()">← All Saved Rosters</button>
       <div class="card">
         <h2>${formatDate(g.date)}</h2>
         <p class="muted">${g.opponent ? ('vs ' + g.opponent + ' · ') : ''}${g.presentIds.length} players present · ${g.shiftsPerHalf} shifts per half</p>
+        ${hasScore ? `<p style="font-weight:800;color:var(--pitch-deep);margin-top:8px;">${State.settings.teamName||'Us'} ${total.us} — ${total.opp} ${g.opponent||'Opponent'}</p>` : ''}
+        <button class="btn gold full" style="margin-top:12px;" onclick="openLiveGame('${g.date}')">${hasScore ? 'Continue Live Scoring' : 'Start Live Game'}</button>
       </div>
       ${generatedRosterHtml(g.halves, g.presentIds, g.gkHalf1, g.gkHalf2, false, g.date, g.opponent)}
       <button class="btn danger" style="margin-top:14px;" onclick="deleteGame('${g.date}')">Delete This Roster</button>
@@ -595,8 +613,11 @@ function savedViewHtml(){
   }
   return `<div class="card">${dates.map(dt=>{
     const g = State.games[dt];
+    ensureLiveGame(g);
+    const total = computeScore(g.liveGame.goals);
+    const hasScore = g.liveGame.goals.length > 0;
     return `<div class="game-list-item" onclick="openGame('${dt}')">
-      <div><div class="date">${formatDate(dt)}${g.opponent ? (' — vs '+g.opponent) : ''}</div><div class="sub">${g.presentIds.length} present · ${g.shiftsPerHalf} shifts/half</div></div>
+      <div><div class="date">${formatDate(dt)}${g.opponent ? (' — vs '+g.opponent) : ''}</div><div class="sub">${g.presentIds.length} present · ${g.shiftsPerHalf} shifts/half${hasScore ? ' · '+total.us+'–'+total.opp : ''}</div></div>
       <span style="color:var(--slate-light);font-size:18px;">›</span>
     </div>`;
   }).join('')}</div>`;
@@ -614,6 +635,134 @@ async function deleteGame(date){
   await saveGames(State.games);
   State.activeGameDate = null;
   render();
+}
+
+/* ----- Live Game scoring ----- */
+function ensureLiveGame(g){
+  if(!g.liveGame) g.liveGame = { goals: [] };
+}
+function computeScore(goals, half){
+  const list = half ? goals.filter(x=>x.half===half) : goals;
+  const us = list.filter(x=> x.type==='us' || x.type==='ownGoal').length;
+  const opp = list.filter(x=> x.type==='opponent').length;
+  return { us, opp };
+}
+
+function openLiveGame(date){
+  State.tab = 'live';
+  State.activeGameDate = date;
+  State.viewingHalf = 0;
+  State.viewingShift = 0;
+  State.showScorerPicker = false;
+  render();
+}
+function closeLiveGame(){
+  State.tab = 'saved';
+  State.showScorerPicker = false;
+  render();
+}
+function setLiveHalf(h){ State.viewingHalf = h; State.viewingShift = 0; State.showScorerPicker = false; render(); }
+function setLiveShift(i){ State.viewingShift = i; render(); }
+function toggleScorerPicker(){ State.showScorerPicker = !State.showScorerPicker; render(); }
+
+async function logGoal(type, scorerId){
+  const g = State.games[State.activeGameDate];
+  if(!g) return;
+  ensureLiveGame(g);
+  g.liveGame.goals.push({ id: uid(), half: State.viewingHalf+1, type, scorerId: scorerId || null, ts: Date.now() });
+  await saveGames(State.games);
+  State.showScorerPicker = false;
+  render();
+  const msg = type==='opponent' ? 'Opponent goal logged'
+    : type==='ownGoal' ? 'Own goal — point for ' + (State.settings.teamName || 'us')
+    : 'Goal logged for ' + playerName(scorerId);
+  showToast(msg);
+}
+async function deleteGoal(goalId){
+  const g = State.games[State.activeGameDate];
+  if(!g || !g.liveGame) return;
+  g.liveGame.goals = g.liveGame.goals.filter(x=>x.id!==goalId);
+  await saveGames(State.games);
+  render();
+}
+
+function liveGameViewHtml(){
+  const g = State.games[State.activeGameDate];
+  if(!g){
+    return `<div class="empty-state"><div class="display">Game Not Found</div><p>Go back and open a saved roster to start live scoring.</p></div>`;
+  }
+  ensureLiveGame(g);
+  const goals = g.liveGame.goals;
+  const total = computeScore(goals);
+  const h1 = computeScore(goals, 1);
+  const h2 = computeScore(goals, 2);
+  const activeHalf = State.viewingHalf;
+  const half = g.halves[activeHalf];
+  const shift = half.shifts[State.viewingShift];
+  const gkId = activeHalf===0 ? g.gkHalf1 : g.gkHalf2;
+  const presentPlayers = g.presentIds.map(id=> State.players.find(p=>p.id===id)).filter(Boolean);
+  const teamLabel = State.settings.teamName || 'Us';
+  const oppLabel = g.opponent || 'Opponent';
+
+  const goalLogHtml = goals.slice().sort((a,b)=>a.ts-b.ts).map(entry=>{
+    let label;
+    if(entry.type==='us') label = 'H' + entry.half + ' — ' + playerName(entry.scorerId) + ' (' + teamLabel + ')';
+    else if(entry.type==='ownGoal') label = 'H' + entry.half + ' — Opponent own goal (' + teamLabel + ')';
+    else label = 'H' + entry.half + ' — ' + oppLabel;
+    return `<div class="goal-row"><span>${label}</span><button class="btn danger" onclick="deleteGoal('${entry.id}')">Remove</button></div>`;
+  }).join('') || `<p class="muted">No goals logged yet.</p>`;
+
+  return `
+    <button class="btn secondary" style="margin-bottom:12px;" onclick="closeLiveGame()">← Back to Roster</button>
+
+    <div class="card">
+      <h2>${g.opponent ? ('vs ' + g.opponent) : 'Live Game'}</h2>
+      <p class="muted">${formatDate(g.date)}</p>
+      <div class="score-big">
+        <div class="score-side"><div class="score-label">${teamLabel}</div><div class="score-num">${total.us}</div></div>
+        <div class="score-sep">–</div>
+        <div class="score-side"><div class="score-label">${oppLabel}</div><div class="score-num">${total.opp}</div></div>
+      </div>
+      <p class="muted" style="text-align:center;margin-top:8px;">Half 1: ${h1.us}–${h1.opp} &nbsp;·&nbsp; Half 2: ${h2.us}–${h2.opp}</p>
+    </div>
+
+    <div class="card">
+      <h2>Log a Goal — Half ${activeHalf+1}</h2>
+      <div class="shift-tabs">
+        ${[0,1].map(h=>`<button class="${activeHalf===h?'active':''}" onclick="setLiveHalf(${h})">Half ${h+1}</button>`).join('')}
+      </div>
+      <div class="row" style="gap:10px;margin-top:10px;">
+        <button class="btn full" onclick="toggleScorerPicker()">+ ${teamLabel} Goal</button>
+        <button class="btn full secondary" onclick="logGoal('opponent')">+ ${oppLabel} Goal</button>
+      </div>
+      ${State.showScorerPicker ? `
+        <div style="margin-top:12px;">
+          <p class="muted" style="margin:0 0 6px;">Who scored?</p>
+          <div class="bench-chips">
+            ${presentPlayers.map(p=>`<span class="bench-chip" style="cursor:pointer;" onclick="logGoal('us','${p.id}')">${playerName(p.id)}</span>`).join('')}
+            <span class="bench-chip" style="cursor:pointer;background:#FCEFE9;color:var(--danger);border-color:#F0C4B0;" onclick="logGoal('ownGoal')">Opponent Own Goal</span>
+          </div>
+        </div>
+      ` : ''}
+    </div>
+
+    <div class="card">
+      <h2>On the Field — Half ${activeHalf+1}, Shift ${State.viewingShift+1}</h2>
+      <div class="shift-tabs">
+        ${half.shifts.map((_,i)=>`<button class="${State.viewingShift===i?'active':''}" onclick="setLiveShift(${i})">Shift ${i+1}</button>`).join('')}
+      </div>
+      <div class="pitch-wrap">${pitchSvg(shift.assign, false, gkId)}</div>
+      <div class="bench-strip">
+        <div class="lbl">Bench</div>
+        <div class="bench-chips">${shift.benched.map(pid=>`<span class="bench-chip">${playerName(pid)}</span>`).join('')}</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Goal Log</h2>
+      ${goalLogHtml}
+    </div>
+  `;
 }
 
 /* ----- Shared: generated roster (pitch diagram) renderer ----- */

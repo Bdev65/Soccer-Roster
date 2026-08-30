@@ -91,6 +91,8 @@
   .pitch-wrap svg{display:block;width:100%;height:auto;}
   .bubble-label{font-family:'Inter';font-weight:800;font-size:10.5px;fill:var(--pitch-deep);}
   .bubble-pos{font-family:'Inter';font-weight:600;font-size:6.5px;letter-spacing:0.06em;fill:var(--slate);}
+  .bubble-name{font-family:'Inter';font-weight:800;font-size:6.2px;fill:var(--pitch-deep);}
+  .bubble-pos-sm{font-family:'Inter';font-weight:600;font-size:4.4px;letter-spacing:0.05em;fill:var(--slate);}
 
   .bench-strip{margin-top:10px;padding:12px;background:#EDF3EC;border-radius:12px;}
   .bench-strip .lbl{font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:var(--slate);margin-bottom:8px;}
@@ -130,6 +132,10 @@
   table.rt-table th, table.rt-table td{padding:7px 8px;text-align:center;border-bottom:1px solid #EEF1EC;white-space:nowrap;}
   table.rt-table th{color:var(--slate);font-size:10.5px;text-transform:uppercase;letter-spacing:0.04em;font-weight:800;}
   table.rt-table td.rt-name, table.rt-table th.rt-name{text-align:left;font-weight:700;color:var(--pitch-deep);position:sticky;left:0;background:var(--card);}
+
+  .theme-row{display:flex;gap:10px;flex-wrap:wrap;}
+  .theme-swatch{width:36px;height:36px;border-radius:50%;border:2.5px solid #E4E9E4;cursor:pointer;padding:0;}
+  .theme-swatch.selected{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold) inset, 0 0 0 1px var(--gold);}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </head>
@@ -167,12 +173,18 @@ async function loadGames(){
   try{ return v ? JSON.parse(v) : {}; }catch(e){ return {}; }
 }
 async function saveGames(obj){ await storageSet('games', JSON.stringify(obj)); }
+async function loadSettings(){
+  const v = await storageGet('settings');
+  try{ return v ? JSON.parse(v) : { teamName:'', theme:'green' }; }catch(e){ return { teamName:'', theme:'green' }; }
+}
+async function saveSettings(obj){ await storageSet('settings', JSON.stringify(obj)); }
 
 /* ---------- App state ---------- */
 const State = {
   tab: 'roster',
   players: [],
   games: {},
+  settings: { teamName: '', theme: 'green' },
   loaded: false,
   // new-game draft
   draft: null,
@@ -191,6 +203,24 @@ const POSITION_SLOTS = [
   {code:'F',  label:'Forward', short:'F', zone:'Attack'},
 ];
 
+const THEMES = {
+  green:  { name:'Forest Green', pitchDeep:'#12312A', pitch:'#1B4D3E', pitchStripe:'#194533', gold:'#E8B923' },
+  blue:   { name:'Dragon Blue',  pitchDeep:'#0D2A45', pitch:'#164C78', pitchStripe:'#124066', gold:'#F2C230' },
+  red:    { name:'Crimson',      pitchDeep:'#3D0F16', pitch:'#7A1B2C', pitchStripe:'#661722', gold:'#E8B923' },
+  purple: { name:'Royal Purple', pitchDeep:'#211039', pitch:'#3D1B6B', pitchStripe:'#331759', gold:'#E8B923' },
+  orange: { name:'Sunset Orange',pitchDeep:'#5C2A0C', pitch:'#B4501B', pitchStripe:'#984318', gold:'#2E4D3D' },
+  slate:  { name:'Slate Gray',   pitchDeep:'#1E262B', pitch:'#3C4C56', pitchStripe:'#334148', gold:'#E8B923' },
+};
+
+function applyTheme(key){
+  const t = THEMES[key] || THEMES.green;
+  const root = document.documentElement.style;
+  root.setProperty('--pitch-deep', t.pitchDeep);
+  root.setProperty('--pitch', t.pitch);
+  root.setProperty('--pitch-stripe', t.pitchStripe);
+  root.setProperty('--gold', t.gold);
+}
+
 function uid(){ return Math.random().toString(36).slice(2,9); }
 function shuffle(arr){ const a=arr.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
 function playerName(id){
@@ -204,6 +234,12 @@ function playerInitials(id){
   const first = (p.name[0]||'?').toUpperCase();
   const second = p.lastInitial ? p.lastInitial[0].toUpperCase() : (p.name[1]||'').toUpperCase();
   return first + second;
+}
+function pitchDisplayLabel(id){
+  const p = State.players.find(p=>p.id===id);
+  if(!p) return '?';
+  let first = p.name.length > 6 ? p.name.slice(0,6) : p.name;
+  return p.lastInitial ? (first + ' ' + p.lastInitial.toUpperCase() + '.') : first;
 }
 
 let toastTimer = null;
@@ -307,6 +343,7 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
 
 /* ---------- Rendering ---------- */
 function render(){
+  document.title = State.settings.teamName ? (State.settings.teamName + ' — Roster') : 'Match Day Roster';
   const app = document.getElementById('app');
   app.innerHTML = `
     ${headerHtml()}
@@ -317,9 +354,10 @@ function render(){
 
 function headerHtml(){
   const titles = {roster:'Team Roster', newgame:'New Match Roster', saved:'Saved Rosters'};
+  const eyebrow = State.settings.teamName ? State.settings.teamName.toUpperCase() : 'MATCH DAY';
   return `
     <header class="topbar">
-      <div class="eyebrow">Match Day</div>
+      <div class="eyebrow">${eyebrow}</div>
       <h1>${titles[State.tab]}</h1>
     </header>
   `;
@@ -343,6 +381,18 @@ function mainHtml(){
 function rosterViewHtml(){
   return `
     <div class="card">
+      <h2>Team Settings</h2>
+      <label class="field-label">Team Name</label>
+      <input type="text" value="${State.settings.teamName||''}" placeholder="e.g. Blue Dragons" maxlength="30" onchange="updateTeamName(this.value)">
+      <div style="height:14px;"></div>
+      <label class="field-label">Color Theme</label>
+      <div class="theme-row">
+        ${Object.entries(THEMES).map(([key,t])=>`
+          <button class="theme-swatch ${State.settings.theme===key?'selected':''}" style="background:${t.pitch};" onclick="setTheme('${key}')" aria-label="${t.name}"></button>
+        `).join('')}
+      </div>
+    </div>
+    <div class="card">
       <h2>Add a Player</h2>
       <div class="row">
         <input type="text" id="newPlayerInput" placeholder="First name" maxlength="24" style="flex:3;">
@@ -364,6 +414,18 @@ function rosterViewHtml(){
       }
     </div>
   `;
+}
+
+function updateTeamName(val){
+  State.settings.teamName = val.trim();
+  saveSettings(State.settings);
+  render();
+}
+function setTheme(key){
+  State.settings.theme = key;
+  saveSettings(State.settings);
+  applyTheme(key);
+  render();
 }
 
 function addPlayer(){
@@ -560,7 +622,7 @@ function generatedRosterHtml(halves, presentIds, gkHalf1, gkHalf2, editable, gam
   const shift = half.shifts[State.viewingShift];
   const gkId = State.viewingHalf===0 ? gkHalf1 : gkHalf2;
 
-  window.__pdfExportData = { halves, gkHalf1, gkHalf2, gameDate, opponent, presentIds };
+  window.__pdfExportData = { halves, gkHalf1, gkHalf2, gameDate, opponent, presentIds, teamName: State.settings.teamName };
 
   let html = `
     <div class="row" style="justify-content:flex-end;margin-bottom:8px;">
@@ -726,9 +788,9 @@ function reviewTablesHtml(halves, presentIds, gkHalf1, gkHalf2){
 function pitchSvg(assign, editable, gkId){
   // simple 2-2-1 layout coordinates on a 100x140 viewbox pitch
   const coords = {
-    D1: [30, 100], D2: [70, 100],
+    D1: [27, 100], D2: [73, 100],
     M:  [50, 72],
-    W1: [18, 42], W2: [82, 42],
+    W1: [17, 42], W2: [83, 42],
     F:  [50, 18],
   };
   let circles = '';
@@ -738,9 +800,9 @@ function pitchSvg(assign, editable, gkId){
     const sel = State.swapSelection && State.swapSelection.type==='field' && State.swapSelection.slot===slot.code;
     circles += `
       <g ${editable?`onclick="selectSwap('field','${slot.code}')"`:''} style="cursor:${editable?'pointer':'default'};">
-        <circle cx="${x}" cy="${y}" r="11" fill="${sel? '#FFF4CF':'var(--chalk,#F5F7F2)'}" stroke="${sel?'#E8B923':'#12312A'}" stroke-width="${sel?'2.2':'1'}"/>
-        <text x="${x}" y="${y-1.5}" text-anchor="middle" class="bubble-label">${playerInitials(pid)}</text>
-        <text x="${x}" y="${y+6.5}" text-anchor="middle" class="bubble-pos">${slot.short}</text>
+        <rect x="${x-17}" y="${y-8.5}" width="34" height="17" rx="6" fill="${sel? '#FFF4CF':'var(--chalk,#F5F7F2)'}" stroke="${sel?'#E8B923':'#12312A'}" stroke-width="${sel?'1.6':'0.8'}"/>
+        <text x="${x}" y="${y-1}" text-anchor="middle" class="bubble-name">${pitchDisplayLabel(pid)}</text>
+        <text x="${x}" y="${y+5.5}" text-anchor="middle" class="bubble-pos-sm">${slot.short}</text>
       </g>
     `;
   });
@@ -753,9 +815,9 @@ function pitchSvg(assign, editable, gkId){
       <rect x="25" y="122" width="50" height="16" fill="none" stroke="#EAF2ED" stroke-width="0.7" opacity="0.4"/>
       ${circles}
       <g>
-        <circle cx="50" cy="131" r="9" fill="#E8B923" stroke="#12312A" stroke-width="1"/>
-        <text x="50" y="129.5" text-anchor="middle" class="bubble-label" style="fill:#12312A;">${playerInitials(gkId)}</text>
-        <text x="50" y="136" text-anchor="middle" class="bubble-pos">GK</text>
+        <rect x="33" y="123" width="34" height="17" rx="6" fill="var(--gold,#E8B923)" stroke="#12312A" stroke-width="0.8"/>
+        <text x="50" y="129.5" text-anchor="middle" class="bubble-name" style="fill:#12312A;">${pitchDisplayLabel(gkId)}</text>
+        <text x="50" y="136" text-anchor="middle" class="bubble-pos-sm" style="fill:#12312A;">GK</text>
       </g>
     </svg>
   `;
@@ -777,6 +839,11 @@ function exportRosterPDF(){
     const benchWidth =  62;
 
     let y = 18;
+    if(data.teamName){
+      doc.setFontSize(11);
+      doc.text(data.teamName.toUpperCase(), 14, y);
+      y += 6;
+    }
     doc.setFontSize(16);
     doc.text('Match Day Roster', 14, y);
     y += 7;
@@ -959,6 +1026,8 @@ function setTab(t){ State.tab = t; State.swapSelection=null; render(); }
 async function init(){
   State.players = await loadRoster();
   State.games = await loadGames();
+  State.settings = await loadSettings();
+  applyTheme(State.settings.theme);
   State.loaded = true;
   render();
 }

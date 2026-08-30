@@ -341,7 +341,6 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
     const gkId = hd.gk;
     const fieldEligible = present.filter(p=>p.id!==gkId);
     const shifts = [];
-    const cap = shiftsPerHalf >= 3 ? 2 : 1;
     let currentAssign = null; // { slotCode: playerId } carried from the previous shift
 
     for(let s=0; s<shiftsPerHalf; s++){
@@ -354,27 +353,24 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
         assign = assignPlayersToCodes(onFieldIds, ALL_CODES.slice(), state);
         benchedIds = fieldEligible.map(p=>p.id).filter(pid=> !onFieldIds.includes(pid));
       } else {
-        // Later shifts: anyone under the consecutive-shift cap KEEPS their exact
-        // slot. Only players who've hit the cap get substituted out, and only
-        // their specific vacated slots get refilled from the bench.
-        const stayers = {};
-        let vacatedCodes = [];
-        Object.entries(currentAssign).forEach(([code,pid])=>{
-          if(state[pid].consecutiveOnField >= cap) vacatedCodes.push(code);
-          else stayers[code] = pid;
-        });
+        // Later shifts: rotate as many players as the bench can actually
+        // support this shift — not a fixed number. Whoever's true bench
+        // (not currently on the field at all) is available to come in; we
+        // substitute min(bench size, 6) players, prioritizing bringing off
+        // whoever's been on the field the longest current streak (then most
+        // total shifts played), so the same few kids aren't stuck out there.
+        const benchPool = fieldEligible.filter(p=> !Object.values(currentAssign).includes(p.id));
+        const numToSub = Math.min(benchPool.length, 6);
 
-        const stayerIds = Object.values(stayers);
-        const vacatingIds = Object.values(currentAssign).filter(pid=> !stayerIds.includes(pid));
-        const benchPool = fieldEligible.filter(p=> !stayerIds.includes(p.id) && !vacatingIds.includes(p.id));
-        // If there aren't enough bench players to fill every vacancy (can happen
-        // with a very small roster), keep the extra players on rather than drop
-        // a position entirely.
-        if(vacatedCodes.length > benchPool.length){
-          const revert = vacatedCodes.slice(benchPool.length);
-          vacatedCodes = vacatedCodes.slice(0, benchPool.length);
-          revert.forEach(code=>{ stayers[code] = currentAssign[code]; });
-        }
+        const onFieldEntries = Object.entries(currentAssign); // [code, pid]
+        const sorted = onFieldEntries.slice().sort((a,b)=>{
+          const pa = state[a[1]], pb = state[b[1]];
+          if(pb.consecutiveOnField !== pa.consecutiveOnField) return pb.consecutiveOnField - pa.consecutiveOnField;
+          return pb.shiftsPlayed - pa.shiftsPlayed;
+        });
+        const vacatedCodes = sorted.slice(0, numToSub).map(([code])=>code);
+        const stayers = {};
+        onFieldEntries.forEach(([code,pid])=>{ if(!vacatedCodes.includes(code)) stayers[code] = pid; });
 
         // Jointly pick who comes in AND which exact vacated spot they take,
         // so a bench player who's already played Right Wing this game is
@@ -437,7 +433,7 @@ function headerHtml(){
   const record = computeSeasonRecord();
   const recordHtml = record.played > 0 ? `
     <div class="season-record">
-      <div class="season-record-label">Season</div>
+      <div class="season-record-label">Season W-L-T</div>
       <div class="season-record-value">${record.w}-${record.l}-${record.t}</div>
     </div>
   ` : '';

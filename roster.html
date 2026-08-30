@@ -35,6 +35,10 @@
   }
   header.topbar .eyebrow{font-size:11px;letter-spacing:0.18em;color:var(--gold);font-weight:700;text-transform:uppercase;}
   header.topbar h1{font-size:26px;margin:2px 0 0;color:var(--chalk);}
+  .header-top-row{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;}
+  .season-record{text-align:right;flex-shrink:0;}
+  .season-record-label{font-size:9.5px;letter-spacing:0.14em;color:var(--gold);font-weight:700;text-transform:uppercase;}
+  .season-record-value{font-family:'Anton';font-size:22px;color:var(--chalk);line-height:1.1;margin-top:1px;}
 
   .sticky-top{position:sticky;top:0;z-index:20;}
   nav.tabs{display:flex;background:var(--pitch);}
@@ -204,13 +208,16 @@ const State = {
 };
 
 const POSITION_SLOTS = [
-  {code:'D1', label:'Defender', short:'D', zone:'Defense'},
-  {code:'D2', label:'Defender', short:'D', zone:'Defense'},
-  {code:'M',  label:'Midfielder', short:'M', zone:'Midfield'},
-  {code:'W1', label:'Wing', short:'W', zone:'Attack'},
-  {code:'W2', label:'Wing', short:'W', zone:'Attack'},
-  {code:'F',  label:'Forward', short:'F', zone:'Attack'},
+  {code:'D1', label:'Left Back', short:'LB'},
+  {code:'D2', label:'Right Back', short:'RB'},
+  {code:'M',  label:'Midfielder', short:'M'},
+  {code:'W1', label:'Left Wing', short:'LW'},
+  {code:'W2', label:'Right Wing', short:'RW'},
+  {code:'F',  label:'Forward', short:'F'},
 ];
+const ALL_CODES = ['D1','D2','M','W1','W2','F'];
+const CODE_LABEL = { D1:'Left Back', D2:'Right Back', M:'Midfielder', W1:'Left Wing', W2:'Right Wing', F:'Forward' };
+const CODE_ABBR  = { D1:'LB', D2:'RB', M:'Mid', W1:'LW', W2:'RW', F:'Fwd', GK:'GK', Bench:'Bench' };
 
 const THEMES = {
   green:  { name:'Forest Green', pitchDeep:'#12312A', pitch:'#1B4D3E', pitchStripe:'#194533', gold:'#E8B923' },
@@ -262,22 +269,47 @@ function showToast(msg){
 }
 
 /* ---------- Rotation engine ---------- */
-const SLOT_CATEGORIES = ['Defender','Defender','Midfielder','Wing','Wing','Forward'];
-const ALL_CODES = ['D1','D2','M','W1','W2','F'];
 
 /* Greedy min-cost matching: pair each given player with one of the given
-   slot codes, favoring whichever category that player has played LEAST so
-   far this game, and lightly penalizing repeating their immediately-previous
-   category. Works for a full 6-code assignment or a partial one (just the
-   codes that need refilling). */
+   position codes, favoring whichever exact position that player has played
+   LEAST so far this game, and lightly penalizing repeating their
+   immediately-previous position. Used for a full 6-code assignment (start of
+   a half) where the 6 players are already chosen and we're only deciding
+   which exact spot each takes. */
 function assignPlayersToCodes(playerIds, codes, state){
   const pairs = [];
   playerIds.forEach(pid=>{
     codes.forEach(code=>{
-      const cat = POS_CATEGORY[code];
-      const cnt = state[pid].categoryCounts[cat];
-      const repeatPenalty = state[pid].lastCategory === cat ? 5 : 0;
+      const cnt = state[pid].positionCounts[code];
+      const repeatPenalty = state[pid].lastPosition === code ? 5 : 0;
       pairs.push({ pid, code, cost: cnt*10 + repeatPenalty + Math.random() });
+    });
+  });
+  pairs.sort((a,b)=> a.cost - b.cost);
+  const usedPlayers = new Set(), usedCodes = new Set();
+  const assign = {};
+  pairs.forEach(pair=>{
+    if(usedPlayers.has(pair.pid) || usedCodes.has(pair.code)) return;
+    assign[pair.code] = pair.pid;
+    usedPlayers.add(pair.pid);
+    usedCodes.add(pair.code);
+  });
+  return assign;
+}
+
+/* Same idea, but for mid-half substitutions: picks WHICH bench players come
+   in (not just where) by weighing total playing time first (fairness stays
+   dominant) and each candidate's history at that exact position second, so a
+   vacated Right Wing spot preferentially goes to someone who hasn't played
+   Right Wing yet, not just whoever's played the least overall. */
+function assignIncomingToVacancies(candidateIds, codes, state){
+  const pairs = [];
+  candidateIds.forEach(pid=>{
+    codes.forEach(code=>{
+      const fairnessCost = state[pid].shiftsPlayed;
+      const posCost = state[pid].positionCounts[code];
+      const repeatPenalty = state[pid].lastPosition === code ? 5 : 0;
+      pairs.push({ pid, code, cost: fairnessCost*100 + posCost*10 + repeatPenalty + Math.random() });
     });
   });
   pairs.sort((a,b)=> a.cost - b.cost);
@@ -298,8 +330,8 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
   present.forEach(p=> state[p.id] = {
     shiftsPlayed: 0,
     consecutiveOnField: 0,
-    lastCategory: null,
-    categoryCounts: { Defender:0, Midfielder:0, Wing:0, Forward:0 },
+    lastPosition: null,
+    positionCounts: { D1:0, D2:0, M:0, W1:0, W2:0, F:0 },
   });
 
   const halfDefs = [ {gk:gkHalf1}, {gk:gkHalf2} ];
@@ -344,9 +376,11 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
           revert.forEach(code=>{ stayers[code] = currentAssign[code]; });
         }
 
-        const benchSorted = shuffle(benchPool.slice()).sort((a,b)=> state[a.id].shiftsPlayed - state[b.id].shiftsPlayed);
-        const incomingIds = benchSorted.slice(0, vacatedCodes.length).map(p=>p.id);
-        const incomingAssign = assignPlayersToCodes(incomingIds, vacatedCodes, state);
+        // Jointly pick who comes in AND which exact vacated spot they take,
+        // so a bench player who's already played Right Wing this game is
+        // steered away from a re-opened Right Wing slot when someone else
+        // available hasn't played it yet.
+        const incomingAssign = assignIncomingToVacancies(benchPool.map(p=>p.id), vacatedCodes, state);
 
         assign = Object.assign({}, stayers, incomingAssign);
         const onFieldIds = Object.values(assign);
@@ -356,9 +390,8 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
       Object.entries(assign).forEach(([code,pid])=>{
         state[pid].shiftsPlayed++;
         state[pid].consecutiveOnField++;
-        const cat = POS_CATEGORY[code];
-        state[pid].categoryCounts[cat]++;
-        state[pid].lastCategory = cat;
+        state[pid].positionCounts[code]++;
+        state[pid].lastPosition = code;
       });
       benchedIds.forEach(pid=>{ state[pid].consecutiveOnField = 0; });
 
@@ -385,13 +418,38 @@ function render(){
   `;
 }
 
+function computeSeasonRecord(){
+  let w=0, l=0, t=0;
+  Object.values(State.games).forEach(g=>{
+    if(g.liveGame && g.liveGame.finalized){
+      const total = computeScore(g.liveGame.goals);
+      if(total.us > total.opp) w++;
+      else if(total.us < total.opp) l++;
+      else t++;
+    }
+  });
+  return { w, l, t, played: w+l+t };
+}
+
 function headerHtml(){
   const titles = {roster:'Team Roster', newgame:'New Match Roster', saved:'Saved Rosters', live:'Live Game'};
   const eyebrow = State.settings.teamName ? State.settings.teamName.toUpperCase() : 'MATCH DAY';
+  const record = computeSeasonRecord();
+  const recordHtml = record.played > 0 ? `
+    <div class="season-record">
+      <div class="season-record-label">Season</div>
+      <div class="season-record-value">${record.w}-${record.l}-${record.t}</div>
+    </div>
+  ` : '';
   return `
     <header class="topbar">
-      <div class="eyebrow">${eyebrow}</div>
-      <h1>${titles[State.tab]}</h1>
+      <div class="header-top-row">
+        <div>
+          <div class="eyebrow">${eyebrow}</div>
+          <h1>${titles[State.tab]}</h1>
+        </div>
+        ${recordHtml}
+      </div>
     </header>
   `;
 }
@@ -852,9 +910,6 @@ function generatedRosterHtml(halves, presentIds, gkHalf1, gkHalf2, editable, gam
 }
 
 /* ----- Review tables: shift grid, position totals, balance checks ----- */
-const POS_CATEGORY = { D1:'Defender', D2:'Defender', M:'Midfielder', W1:'Wing', W2:'Wing', F:'Forward' };
-const POS_ABBR = { Defender:'Def', Midfielder:'Mid', Wing:'Wing', Forward:'Fwd', GK:'GK', Bench:'Bench' };
-
 function computeReviewStats(halves, presentIds, gkHalf1, gkHalf2){
   const columns = [];
   halves.forEach((half,hIdx)=> half.shifts.forEach((_,sIdx)=> columns.push({h:hIdx, s:sIdx, label:'H'+(hIdx+1)+'·'+(sIdx+1)})));
@@ -863,22 +918,21 @@ function computeReviewStats(halves, presentIds, gkHalf1, gkHalf2){
   const totals = {};
   presentIds.forEach(pid=>{
     grid[pid] = [];
-    totals[pid] = { Defender:0, Midfielder:0, Wing:0, Forward:0, GK:0, Bench:0 };
+    totals[pid] = { D1:0, D2:0, M:0, W1:0, W2:0, F:0, GK:0, Bench:0 };
   });
 
   halves.forEach((half,hIdx)=>{
     const gkId = hIdx===0 ? gkHalf1 : gkHalf2;
     half.shifts.forEach(shift=>{
       presentIds.forEach(pid=>{
-        let cat;
-        if(pid===gkId){ cat = 'GK'; }
-        else if(shift.benched.includes(pid)){ cat = 'Bench'; }
+        let code;
+        if(pid===gkId){ code = 'GK'; }
+        else if(shift.benched.includes(pid)){ code = 'Bench'; }
         else{
-          const slotCode = Object.keys(shift.assign).find(code=> shift.assign[code]===pid);
-          cat = slotCode ? POS_CATEGORY[slotCode] : null;
+          code = Object.keys(shift.assign).find(c=> shift.assign[c]===pid) || null;
         }
-        grid[pid].push(cat);
-        if(cat) totals[pid][cat] = (totals[pid][cat]||0) + 1;
+        grid[pid].push(code);
+        if(code) totals[pid][code] = (totals[pid][code]||0) + 1;
       });
     });
   });
@@ -886,15 +940,15 @@ function computeReviewStats(halves, presentIds, gkHalf1, gkHalf2){
   const checks = {};
   presentIds.forEach(pid=>{
     const t = totals[pid];
-    const fieldTotal = t.Defender + t.Midfielder + t.Wing + t.Forward;
+    const fieldTotal = t.D1+t.D2+t.M+t.W1+t.W2+t.F;
     const totalShifts = fieldTotal + t.GK + t.Bench;
-    const maxSingle = Math.max(t.Defender, t.Midfielder, t.Wing, t.Forward);
+    const maxSingle = Math.max(t.D1,t.D2,t.M,t.W1,t.W2,t.F);
     const played = totalShifts>0 && (fieldTotal>0 || t.GK>0);
     const variedPositions = !(fieldTotal>=3 && maxSingle > fieldTotal/2);
 
     let longestBench = 0, run = 0;
-    grid[pid].forEach(cat=>{
-      if(cat==='Bench'){ run++; longestBench = Math.max(longestBench, run); }
+    grid[pid].forEach(code=>{
+      if(code==='Bench'){ run++; longestBench = Math.max(longestBench, run); }
       else{ run = 0; }
     });
     const benchOk = longestBench < 3;
@@ -911,17 +965,17 @@ function reviewTablesHtml(halves, presentIds, gkHalf1, gkHalf2){
   const gridRows = presentIds.map(pid=>`
     <tr>
       <td class="rt-name">${playerName(pid)}</td>
-      ${grid[pid].map(cat=>`<td>${cat ? POS_ABBR[cat] : '<span style="color:var(--danger);font-weight:800;">!</span>'}</td>`).join('')}
+      ${grid[pid].map(code=>`<td>${code ? CODE_ABBR[code] : '<span style="color:var(--danger);font-weight:800;">!</span>'}</td>`).join('')}
     </tr>
   `).join('');
 
   const totalsRows = presentIds.map(pid=>{
     const t = totals[pid];
-    const sum = t.Defender+t.Midfielder+t.Wing+t.Forward+t.GK+t.Bench;
+    const sum = t.D1+t.D2+t.M+t.W1+t.W2+t.F+t.GK+t.Bench;
     return `
       <tr>
         <td class="rt-name">${playerName(pid)}</td>
-        <td>${t.Defender}</td><td>${t.Midfielder}</td><td>${t.Wing}</td><td>${t.Forward}</td><td>${t.GK}</td><td>${t.Bench}</td>
+        <td>${t.D1}</td><td>${t.D2}</td><td>${t.M}</td><td>${t.W1}</td><td>${t.W2}</td><td>${t.F}</td><td>${t.GK}</td><td>${t.Bench}</td>
         <td style="font-weight:800;">${sum}</td>
       </tr>
     `;
@@ -957,10 +1011,10 @@ function reviewTablesHtml(halves, presentIds, gkHalf1, gkHalf2){
 
     <div class="card">
       <h2>Position Totals</h2>
-      <p class="muted" style="margin-top:-6px;">Shift counts per position, this game. Totals should match across players.</p>
+      <p class="muted" style="margin-top:-6px;">Shift counts per exact position, this game. Totals should match across players.</p>
       <div class="rt-scroll">
         <table class="rt-table">
-          <thead><tr><th class="rt-name">Player</th><th>Def</th><th>Mid</th><th>Wing</th><th>Fwd</th><th>GK</th><th>Bench</th><th>Total</th></tr></thead>
+          <thead><tr><th class="rt-name">Player</th><th>LB</th><th>RB</th><th>Mid</th><th>LW</th><th>RW</th><th>Fwd</th><th>GK</th><th>Bench</th><th>Total</th></tr></thead>
           <tbody>${totalsRows}</tbody>
         </table>
       </div>
@@ -970,7 +1024,7 @@ function reviewTablesHtml(halves, presentIds, gkHalf1, gkHalf2){
       <h2>Balance Checks</h2>
       <p class="muted" style="margin-top:-6px;line-height:1.5;">
         <strong>Played</strong>: got on the field or in goal at least once.
-        <strong>Variety</strong>: no single position took over half their field shifts.
+        <strong>Variety</strong>: no single exact position (e.g. Right Wing) took over half their field shifts.
         <strong>Bench</strong>: never sat 3+ shifts in a row.
       </p>
       <div class="rt-scroll">
@@ -1031,7 +1085,7 @@ function exportRosterPDF(){
     const doc = new jsPDF();
     const dateLabel = data.gameDate ? formatDate(data.gameDate) : 'Untitled Game';
     const gkByHalf = [data.gkHalf1, data.gkHalf2];
-    const colHeaders = ['Shift','Def','Def','Mid','Wing','Wing','Fwd','Bench'];
+    const colHeaders = ['Shift','LB','RB','Mid','LW','RW','Fwd','Bench'];
     const colX =       [14,     22,   40,   58,   76,    94,   112,  130];
     const colWidth =    18;
     const benchWidth =  62;
@@ -1105,28 +1159,25 @@ function currentGameContext(){
   return null;
 }
 
-/* Swap pid out of their most-overused position and into their most-underused
-   one, trading places with whoever's in that shift playing the target
-   position. Touches exactly one shift, two players. */
+/* Swap pid out of their most-overused exact position and into their most-
+   underused one, trading places with whoever's in that shift playing the
+   target position. Touches exactly one shift, two players. */
 function fixVariety(pid, halves, ctx){
-  const CAT4 = ['Defender','Midfielder','Wing','Forward'];
   const stats = computeReviewStats(halves, ctx.presentIds, ctx.gkHalf1, ctx.gkHalf2);
   const t = stats.totals[pid];
-  const overCat = CAT4.reduce((a,b)=> t[b]>t[a] ? b : a, CAT4[0]);
-  const underCat = CAT4.reduce((a,b)=> t[b]<t[a] ? b : a, CAT4[0]);
-  if(overCat === underCat) return null;
+  const overCode = ALL_CODES.reduce((a,b)=> t[b]>t[a] ? b : a, ALL_CODES[0]);
+  const underCode = ALL_CODES.reduce((a,b)=> t[b]<t[a] ? b : a, ALL_CODES[0]);
+  if(overCode === underCode) return null;
 
   for(let hIdx=0; hIdx<halves.length; hIdx++){
     const half = halves[hIdx];
     for(let sIdx=0; sIdx<half.shifts.length; sIdx++){
       const shift = half.shifts[sIdx];
-      const pidCode = Object.keys(shift.assign).find(code=> shift.assign[code]===pid);
-      if(!pidCode || POS_CATEGORY[pidCode] !== overCat) continue;
-      const partnerCode = Object.keys(shift.assign).find(code=> POS_CATEGORY[code]===underCat && shift.assign[code]!==pid);
-      if(!partnerCode) continue;
-      const partnerId = shift.assign[partnerCode];
-      shift.assign[pidCode] = partnerId;
-      shift.assign[partnerCode] = pid;
+      if(shift.assign[overCode] !== pid) continue;
+      const partnerId = shift.assign[underCode];
+      if(!partnerId) continue;
+      shift.assign[overCode] = partnerId;
+      shift.assign[underCode] = pid;
       return { hIdx, sIdx };
     }
   }

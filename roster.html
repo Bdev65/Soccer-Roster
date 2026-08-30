@@ -263,7 +263,34 @@ function showToast(msg){
 
 /* ---------- Rotation engine ---------- */
 const SLOT_CATEGORIES = ['Defender','Defender','Midfielder','Wing','Wing','Forward'];
-const CATEGORY_CODES = { Defender:['D1','D2'], Wing:['W1','W2'], Midfielder:['M'], Forward:['F'] };
+const ALL_CODES = ['D1','D2','M','W1','W2','F'];
+
+/* Greedy min-cost matching: pair each given player with one of the given
+   slot codes, favoring whichever category that player has played LEAST so
+   far this game, and lightly penalizing repeating their immediately-previous
+   category. Works for a full 6-code assignment or a partial one (just the
+   codes that need refilling). */
+function assignPlayersToCodes(playerIds, codes, state){
+  const pairs = [];
+  playerIds.forEach(pid=>{
+    codes.forEach(code=>{
+      const cat = POS_CATEGORY[code];
+      const cnt = state[pid].categoryCounts[cat];
+      const repeatPenalty = state[pid].lastCategory === cat ? 5 : 0;
+      pairs.push({ pid, code, cost: cnt*10 + repeatPenalty + Math.random() });
+    });
+  });
+  pairs.sort((a,b)=> a.cost - b.cost);
+  const usedPlayers = new Set(), usedCodes = new Set();
+  const assign = {};
+  pairs.forEach(pair=>{
+    if(usedPlayers.has(pair.pid) || usedCodes.has(pair.code)) return;
+    assign[pair.code] = pair.pid;
+    usedPlayers.add(pair.pid);
+    usedCodes.add(pair.code);
+  });
+  return assign;
+}
 
 function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
   const present = presentIds.map(id=>({id}));
@@ -283,65 +310,60 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
     const fieldEligible = present.filter(p=>p.id!==gkId);
     const shifts = [];
     const cap = shiftsPerHalf >= 3 ? 2 : 1;
+    let currentAssign = null; // { slotCode: playerId } carried from the previous shift
 
     for(let s=0; s<shiftsPerHalf; s++){
-      let mustBench = fieldEligible.filter(p=> state[p.id].consecutiveOnField >= cap);
-      let pool = fieldEligible.filter(p=> !mustBench.includes(p));
-      pool = shuffle(pool).sort((a,b)=> state[a.id].shiftsPlayed - state[b.id].shiftsPlayed);
+      let assign, benchedIds;
 
-      let onField = pool.slice(0,6);
-      if(onField.length < 6){
-        const need = 6 - onField.length;
-        const extra = shuffle(mustBench).sort((a,b)=> state[a.id].consecutiveOnField - state[b.id].consecutiveOnField).slice(0,need);
-        onField = onField.concat(extra);
-      }
-      const benched = fieldEligible.filter(p=> !onField.includes(p));
-
-      // Greedy min-cost matching: pair each on-field player with a slot category,
-      // favoring whichever categories that player has played LEAST so far this
-      // game, and lightly penalizing repeating their immediately-previous category.
-      const pairs = [];
-      onField.forEach(p=>{
-        SLOT_CATEGORIES.forEach((cat, catIdx)=>{
-          const cnt = state[p.id].categoryCounts[cat];
-          const repeatPenalty = state[p.id].lastCategory === cat ? 5 : 0;
-          pairs.push({ pid:p.id, catIdx, cat, cost: cnt*10 + repeatPenalty + Math.random() });
+      if(!currentAssign){
+        // First shift of the half: pick the 6 with least total field time so far.
+        const pool = shuffle(fieldEligible.slice()).sort((a,b)=> state[a.id].shiftsPlayed - state[b.id].shiftsPlayed);
+        const onFieldIds = pool.slice(0,6).map(p=>p.id);
+        assign = assignPlayersToCodes(onFieldIds, ALL_CODES.slice(), state);
+        benchedIds = fieldEligible.map(p=>p.id).filter(pid=> !onFieldIds.includes(pid));
+      } else {
+        // Later shifts: anyone under the consecutive-shift cap KEEPS their exact
+        // slot. Only players who've hit the cap get substituted out, and only
+        // their specific vacated slots get refilled from the bench.
+        const stayers = {};
+        let vacatedCodes = [];
+        Object.entries(currentAssign).forEach(([code,pid])=>{
+          if(state[pid].consecutiveOnField >= cap) vacatedCodes.push(code);
+          else stayers[code] = pid;
         });
-      });
-      pairs.sort((a,b)=> a.cost - b.cost);
 
-      const usedPlayers = new Set();
-      const usedSlots = new Set();
-      const catAssign = {};
-      pairs.forEach(pair=>{
-        if(usedPlayers.has(pair.pid) || usedSlots.has(pair.catIdx)) return;
-        catAssign[pair.pid] = pair.cat;
-        usedPlayers.add(pair.pid);
-        usedSlots.add(pair.catIdx);
-      });
+        const stayerIds = Object.values(stayers);
+        const vacatingIds = Object.values(currentAssign).filter(pid=> !stayerIds.includes(pid));
+        const benchPool = fieldEligible.filter(p=> !stayerIds.includes(p.id) && !vacatingIds.includes(p.id));
+        // If there aren't enough bench players to fill every vacancy (can happen
+        // with a very small roster), keep the extra players on rather than drop
+        // a position entirely.
+        if(vacatedCodes.length > benchPool.length){
+          const revert = vacatedCodes.slice(benchPool.length);
+          vacatedCodes = vacatedCodes.slice(0, benchPool.length);
+          revert.forEach(code=>{ stayers[code] = currentAssign[code]; });
+        }
 
-      const codePool = {
-        Defender: shuffle(CATEGORY_CODES.Defender.slice()),
-        Wing: shuffle(CATEGORY_CODES.Wing.slice()),
-        Midfielder: CATEGORY_CODES.Midfielder.slice(),
-        Forward: CATEGORY_CODES.Forward.slice(),
-      };
-      const assign = {};
-      Object.entries(catAssign).forEach(([pid,cat])=>{
-        const code = codePool[cat].shift();
-        assign[code] = pid;
-      });
+        const benchSorted = shuffle(benchPool.slice()).sort((a,b)=> state[a.id].shiftsPlayed - state[b.id].shiftsPlayed);
+        const incomingIds = benchSorted.slice(0, vacatedCodes.length).map(p=>p.id);
+        const incomingAssign = assignPlayersToCodes(incomingIds, vacatedCodes, state);
 
-      onField.forEach(p=>{
-        state[p.id].shiftsPlayed++;
-        state[p.id].consecutiveOnField++;
-        const cat = catAssign[p.id];
-        state[p.id].categoryCounts[cat]++;
-        state[p.id].lastCategory = cat;
-      });
-      benched.forEach(p=>{ state[p.id].consecutiveOnField = 0; });
+        assign = Object.assign({}, stayers, incomingAssign);
+        const onFieldIds = Object.values(assign);
+        benchedIds = fieldEligible.map(p=>p.id).filter(pid=> !onFieldIds.includes(pid));
+      }
 
-      shifts.push({ assign, benched: benched.map(p=>p.id) });
+      Object.entries(assign).forEach(([code,pid])=>{
+        state[pid].shiftsPlayed++;
+        state[pid].consecutiveOnField++;
+        const cat = POS_CATEGORY[code];
+        state[pid].categoryCounts[cat]++;
+        state[pid].lastCategory = cat;
+      });
+      benchedIds.forEach(pid=>{ state[pid].consecutiveOnField = 0; });
+
+      shifts.push({ assign, benched: benchedIds });
+      currentAssign = assign;
     }
     fieldEligible.forEach(p=> state[p.id].consecutiveOnField = 0);
     halves.push({ gkId, shifts });
@@ -599,13 +621,14 @@ function savedViewHtml(){
     ensureLiveGame(g);
     const total = computeScore(g.liveGame.goals);
     const hasScore = g.liveGame.goals.length > 0;
+    const btnLabel = g.liveGame.finalized ? 'View Saved Game' : (hasScore ? 'Continue Live Scoring' : 'Start Live Game');
     return `
       <button class="btn secondary" style="margin-bottom:12px;" onclick="closeGame()">← All Saved Rosters</button>
       <div class="card">
         <h2>${formatDate(g.date)}</h2>
         <p class="muted">${g.opponent ? ('vs ' + g.opponent + ' · ') : ''}${g.presentIds.length} players present · ${g.shiftsPerHalf} shifts per half</p>
-        ${hasScore ? `<p style="font-weight:800;color:var(--pitch-deep);margin-top:8px;">${State.settings.teamName||'Us'} ${total.us} — ${total.opp} ${g.opponent||'Opponent'}</p>` : ''}
-        <button class="btn gold full" style="margin-top:12px;" onclick="openLiveGame('${g.date}')">${hasScore ? 'Continue Live Scoring' : 'Start Live Game'}</button>
+        ${hasScore ? `<p style="font-weight:800;color:var(--pitch-deep);margin-top:8px;">${State.settings.teamName||'Us'} ${total.us} — ${total.opp} ${g.opponent||'Opponent'}${g.liveGame.finalized ? ' <span style="color:var(--pitch);font-weight:700;font-size:12px;">(Final)</span>' : ''}</p>` : ''}
+        <button class="btn gold full" style="margin-top:12px;" onclick="openLiveGame('${g.date}')">${btnLabel}</button>
       </div>
       ${generatedRosterHtml(g.halves, g.presentIds, g.gkHalf1, g.gkHalf2, false, g.date, g.opponent)}
       <button class="btn danger" style="margin-top:14px;" onclick="deleteGame('${g.date}')">Delete This Roster</button>
@@ -616,8 +639,9 @@ function savedViewHtml(){
     ensureLiveGame(g);
     const total = computeScore(g.liveGame.goals);
     const hasScore = g.liveGame.goals.length > 0;
+    const scoreTag = hasScore ? (' · '+total.us+'–'+total.opp+(g.liveGame.finalized ? ' Final' : ' (live)')) : '';
     return `<div class="game-list-item" onclick="openGame('${dt}')">
-      <div><div class="date">${formatDate(dt)}${g.opponent ? (' — vs '+g.opponent) : ''}</div><div class="sub">${g.presentIds.length} present · ${g.shiftsPerHalf} shifts/half${hasScore ? ' · '+total.us+'–'+total.opp : ''}</div></div>
+      <div><div class="date">${formatDate(dt)}${g.opponent ? (' — vs '+g.opponent) : ''}</div><div class="sub">${g.presentIds.length} present · ${g.shiftsPerHalf} shifts/half${scoreTag}</div></div>
       <span style="color:var(--slate-light);font-size:18px;">›</span>
     </div>`;
   }).join('')}</div>`;
@@ -639,7 +663,8 @@ async function deleteGame(date){
 
 /* ----- Live Game scoring ----- */
 function ensureLiveGame(g){
-  if(!g.liveGame) g.liveGame = { goals: [] };
+  if(!g.liveGame) g.liveGame = { goals: [], finalized: false };
+  if(g.liveGame.finalized === undefined) g.liveGame.finalized = false;
 }
 function computeScore(goals, half){
   const list = half ? goals.filter(x=>x.half===half) : goals;
@@ -664,6 +689,24 @@ function closeLiveGame(){
 function setLiveHalf(h){ State.viewingHalf = h; State.viewingShift = 0; State.showScorerPicker = false; render(); }
 function setLiveShift(i){ State.viewingShift = i; render(); }
 function toggleScorerPicker(){ State.showScorerPicker = !State.showScorerPicker; render(); }
+
+async function finalizeGame(){
+  const g = State.games[State.activeGameDate];
+  if(!g) return;
+  ensureLiveGame(g);
+  g.liveGame.finalized = true;
+  await saveGames(State.games);
+  showToast('Game saved');
+  closeLiveGame();
+}
+async function editGame(){
+  const g = State.games[State.activeGameDate];
+  if(!g) return;
+  ensureLiveGame(g);
+  g.liveGame.finalized = false;
+  await saveGames(State.games);
+  render();
+}
 
 async function logGoal(type, scorerId){
   const g = State.games[State.activeGameDate];
@@ -709,7 +752,8 @@ function liveGameViewHtml(){
     if(entry.type==='us') label = 'H' + entry.half + ' — ' + playerName(entry.scorerId) + ' (' + teamLabel + ')';
     else if(entry.type==='ownGoal') label = 'H' + entry.half + ' — Opponent own goal (' + teamLabel + ')';
     else label = 'H' + entry.half + ' — ' + oppLabel;
-    return `<div class="goal-row"><span>${label}</span><button class="btn danger" onclick="deleteGoal('${entry.id}')">Remove</button></div>`;
+    const removeBtn = g.liveGame.finalized ? '' : `<button class="btn danger" onclick="deleteGoal('${entry.id}')">Remove</button>`;
+    return `<div class="goal-row"><span>${label}</span>${removeBtn}</div>`;
   }).join('') || `<p class="muted">No goals logged yet.</p>`;
 
   return `
@@ -717,15 +761,17 @@ function liveGameViewHtml(){
 
     <div class="card">
       <h2>${g.opponent ? ('vs ' + g.opponent) : 'Live Game'}</h2>
-      <p class="muted">${formatDate(g.date)}</p>
+      <p class="muted">${formatDate(g.date)}${g.liveGame.finalized ? ' · <strong style="color:var(--pitch);">Game Saved</strong>' : ''}</p>
       <div class="score-big">
         <div class="score-side"><div class="score-label">${teamLabel}</div><div class="score-num">${total.us}</div></div>
         <div class="score-sep">–</div>
         <div class="score-side"><div class="score-label">${oppLabel}</div><div class="score-num">${total.opp}</div></div>
       </div>
       <p class="muted" style="text-align:center;margin-top:8px;">Half 1: ${h1.us}–${h1.opp} &nbsp;·&nbsp; Half 2: ${h2.us}–${h2.opp}</p>
+      ${g.liveGame.finalized ? `<button class="btn secondary full" style="margin-top:14px;" onclick="editGame()">Edit Game</button>` : ''}
     </div>
 
+    ${g.liveGame.finalized ? '' : `
     <div class="card">
       <h2>Log a Goal — Half ${activeHalf+1}</h2>
       <div class="shift-tabs">
@@ -745,6 +791,7 @@ function liveGameViewHtml(){
         </div>
       ` : ''}
     </div>
+    `}
 
     <div class="card">
       <h2>On the Field — Half ${activeHalf+1}, Shift ${State.viewingShift+1}</h2>
@@ -762,6 +809,8 @@ function liveGameViewHtml(){
       <h2>Goal Log</h2>
       ${goalLogHtml}
     </div>
+
+    ${g.liveGame.finalized ? '' : `<button class="btn gold full" style="padding:14px;font-size:15px;margin-top:4px;" onclick="finalizeGame()">Save Game</button>`}
   `;
 }
 

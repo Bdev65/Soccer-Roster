@@ -36,7 +36,19 @@
   header.topbar .eyebrow{font-size:11px;letter-spacing:0.18em;color:var(--gold);font-weight:700;text-transform:uppercase;}
   header.topbar h1{font-size:26px;margin:2px 0 0;color:var(--chalk);}
   .header-top-row{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;}
+  .header-right{display:flex;align-items:center;gap:12px;flex-shrink:0;}
   .season-record{text-align:right;flex-shrink:0;}
+  .gear-btn{
+    width:34px;height:34px;border-radius:9px;border:1.5px solid rgba(245,247,242,0.3);
+    background:rgba(245,247,242,0.08);color:var(--chalk);font-size:17px;line-height:1;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;flex-shrink:0;
+  }
+  .settings-overlay{position:fixed;inset:0;background:var(--bg);z-index:100;overflow-y:auto;}
+  .settings-overlay-header{
+    position:sticky;top:0;z-index:5;background:var(--pitch-deep);border-bottom:3px solid var(--gold);
+    padding:18px 20px;display:flex;justify-content:space-between;align-items:center;
+  }
+  .settings-overlay-body{padding:16px;max-width:520px;margin:0 auto;}
   .season-record-label{font-size:9.5px;letter-spacing:0.14em;color:var(--gold);font-weight:700;text-transform:uppercase;}
   .season-record-value{font-family:'Anton';font-size:22px;color:var(--chalk);line-height:1.1;margin-top:1px;}
 
@@ -216,6 +228,7 @@ const State = {
   showScorerPicker: false,
   undoStack: [],
   expandedPrefsPid: null,
+  settingsOpen: false,
 };
 
 const POSITION_SLOTS = [
@@ -608,8 +621,12 @@ function render(){
       ${tabsHtml()}
     </div>
     <main>${mainHtml()}</main>
+    ${State.settingsOpen ? settingsOverlayHtml() : ''}
   `;
 }
+
+function openSettings(){ State.settingsOpen = true; render(); }
+function closeSettings(){ State.settingsOpen = false; render(); }
 
 function computeSeasonRecord(){
   let w=0, l=0, t=0;
@@ -641,7 +658,10 @@ function headerHtml(){
           <div class="eyebrow">${eyebrow}</div>
           <h1>${titles[State.tab]}</h1>
         </div>
-        ${recordHtml}
+        <div class="header-right">
+          ${recordHtml}
+          <button class="gear-btn" onclick="openSettings()" aria-label="Settings">⚙</button>
+        </div>
       </div>
     </header>
   `;
@@ -758,49 +778,71 @@ function seasonViewHtml(){
 function rosterViewHtml(){
   return `
     <div class="card">
-      <h2>Team Settings</h2>
-      <label class="field-label">Team Name</label>
-      <input type="text" value="${State.settings.teamName||''}" placeholder="e.g. Blue Dragons" maxlength="30" onchange="updateTeamName(this.value)">
-      <div style="height:14px;"></div>
-      <label class="field-label">Color Theme</label>
-      <div class="theme-row">
-        ${Object.entries(THEMES).map(([key,t])=>`
-          <button class="theme-swatch ${State.settings.theme===key?'selected':''}" style="background:${t.pitch};" onclick="setTheme('${key}')" aria-label="${t.name}"></button>
-        `).join('')}
+      <div class="row" style="justify-content:space-between;align-items:center;">
+        <h2 style="margin:0;">Players</h2>
+        <button class="btn secondary" onclick="openSettings()">Manage Roster</button>
       </div>
-      <div style="height:14px;"></div>
-      <label class="field-label">Preference Strength</label>
-      <select onchange="updatePreferenceStrength(this.value)">
-        ${Object.entries(PREF_STRENGTHS).map(([key,s])=>`<option value="${key}" ${State.settings.preferenceStrength===key?'selected':''}>${s.label} at Strongly Prefer/Avoid</option>`).join('')}
-      </select>
-      <p class="muted" style="margin-top:6px;">How far a player's "Strongly Prefer/Avoid" setting can push their season split for that category.</p>
-    </div>
-    <div class="card">
-      <h2>Share Data</h2>
-      <p class="muted" style="margin-top:-6px;">Export everything — roster, saved games, settings — as a file. Another coach can import it on their own phone to get matching data.</p>
-      <div class="row" style="gap:10px;margin-top:10px;">
-        <button class="btn full" onclick="exportData()">Export Data</button>
-        <button class="btn full secondary" onclick="document.getElementById('importFileInput').click()">Import Data</button>
-      </div>
-      <input type="file" id="importFileInput" accept="application/json,.json" style="display:none;" onchange="handleImportFile(event)">
-    </div>
-    <div class="card">
-      <h2>Add a Player</h2>
-      <div class="row">
-        <input type="text" id="newPlayerInput" placeholder="First name" maxlength="24" style="flex:3;">
-        <input type="text" id="newPlayerLastInitial" placeholder="Last initial" maxlength="1" style="flex:1;text-align:center;text-transform:uppercase;">
-        <button class="btn" onclick="addPlayer()">Add</button>
-      </div>
-      <p class="muted" style="margin-top:6px;">Last initial helps tell kids with similar first names apart on the field diagram.</p>
-      <p class="muted" style="margin-top:8px;">${State.players.length} player${State.players.length===1?'':'s'} on the roster.</p>
-    </div>
-    <div class="card">
-      <h2>Players</h2>
-      ${State.players.length===0 ? `<p class="muted">No players yet — add your first player above.</p>` :
-        State.players.map(p=> playerChipHtml(p)).join('')
+      ${State.players.length===0 ? `<p class="muted" style="margin-top:10px;">No players yet — tap the gear icon or "Manage Roster" to add your team.</p>` :
+        `<div style="margin-top:10px;">${State.players.map(p=>`<div class="player-chip"><span class="name">${playerName(p.id)}</span></div>`).join('')}</div>`
       }
     </div>
     ${seasonBalanceTableHtml(computeSeasonPositionStats())}
+  `;
+}
+
+function settingsOverlayHtml(){
+  return `
+    <div class="settings-overlay">
+      <div class="settings-overlay-header">
+        <h1 style="font-size:19px;margin:0;color:var(--chalk);">Settings</h1>
+        <button class="btn secondary" onclick="closeSettings()">✕ Close</button>
+      </div>
+      <div class="settings-overlay-body">
+        <div class="card">
+          <h2>Team Settings</h2>
+          <label class="field-label">Team Name</label>
+          <input type="text" value="${State.settings.teamName||''}" placeholder="e.g. Blue Dragons" maxlength="30" onchange="updateTeamName(this.value)">
+          <div style="height:14px;"></div>
+          <label class="field-label">Color Theme</label>
+          <div class="theme-row">
+            ${Object.entries(THEMES).map(([key,t])=>`
+              <button class="theme-swatch ${State.settings.theme===key?'selected':''}" style="background:${t.pitch};" onclick="setTheme('${key}')" aria-label="${t.name}"></button>
+            `).join('')}
+          </div>
+          <div style="height:14px;"></div>
+          <label class="field-label">Preference Strength</label>
+          <select onchange="updatePreferenceStrength(this.value)">
+            ${Object.entries(PREF_STRENGTHS).map(([key,s])=>`<option value="${key}" ${State.settings.preferenceStrength===key?'selected':''}>${s.label} at Strongly Prefer/Avoid</option>`).join('')}
+          </select>
+          <p class="muted" style="margin-top:6px;">How far a player's "Strongly Prefer/Avoid" setting can push their season split for that category.</p>
+        </div>
+        <div class="card">
+          <h2>Share Data</h2>
+          <p class="muted" style="margin-top:-6px;">Export everything — roster, saved games, settings — as a file. Another coach can import it on their own phone to get matching data.</p>
+          <div class="row" style="gap:10px;margin-top:10px;">
+            <button class="btn full" onclick="exportData()">Export Data</button>
+            <button class="btn full secondary" onclick="document.getElementById('importFileInput').click()">Import Data</button>
+          </div>
+          <input type="file" id="importFileInput" accept="application/json,.json" style="display:none;" onchange="handleImportFile(event)">
+        </div>
+        <div class="card">
+          <h2>Add a Player</h2>
+          <div class="row">
+            <input type="text" id="newPlayerInput" placeholder="First name" maxlength="24" style="flex:3;">
+            <input type="text" id="newPlayerLastInitial" placeholder="Last initial" maxlength="1" style="flex:1;text-align:center;text-transform:uppercase;">
+            <button class="btn" onclick="addPlayer()">Add</button>
+          </div>
+          <p class="muted" style="margin-top:6px;">Last initial helps tell kids with similar first names apart on the field diagram.</p>
+          <p class="muted" style="margin-top:8px;">${State.players.length} player${State.players.length===1?'':'s'} on the roster.</p>
+        </div>
+        <div class="card">
+          <h2>Players</h2>
+          ${State.players.length===0 ? `<p class="muted">No players yet — add your first player above.</p>` :
+            State.players.map(p=> playerChipHtml(p)).join('')
+          }
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -961,11 +1003,30 @@ function ensureDraft(){
       date: new Date().toISOString().slice(0,10),
       opponent: '',
       presentIds,
+      knownIds: presentIds.slice(),
       gkHalf1: gk1 || (State.players[0] ? State.players[0].id : null),
       gkHalf2: gk2 || (State.players[0] ? State.players[0].id : null),
       shiftsPerHalf: 3,
       generated: null,
     };
+  } else {
+    // The roster may change (players added/removed) while this draft is
+    // open. Drop anyone no longer on the roster, and default any player
+    // we've never seen before to present -- but leave alone players we've
+    // already tracked, so an intentional toggle-off survives re-renders
+    // instead of silently reappearing.
+    const currentIds = State.players.map(p=>p.id);
+    if(!State.draft.knownIds) State.draft.knownIds = State.draft.presentIds.slice();
+    State.draft.presentIds = State.draft.presentIds.filter(id=> currentIds.includes(id));
+    State.draft.knownIds = State.draft.knownIds.filter(id=> currentIds.includes(id));
+    currentIds.forEach(id=>{
+      if(!State.draft.knownIds.includes(id)){
+        State.draft.knownIds.push(id);
+        if(!State.draft.presentIds.includes(id)) State.draft.presentIds.push(id);
+      }
+    });
+    if(!currentIds.includes(State.draft.gkHalf1)) State.draft.gkHalf1 = State.draft.presentIds[0] || null;
+    if(!currentIds.includes(State.draft.gkHalf2)) State.draft.gkHalf2 = State.draft.presentIds[0] || null;
   }
 }
 

@@ -245,6 +245,7 @@ const PREF_LABELS = { '-2':'Strongly Avoid', '-1':'Slightly Avoid', '0':'Neutral
 const PREF_STRENGTHS = {
   '100': { label: '100% / 0%', max: 1.00, min: 0.00 },
   '80':  { label: '80% / 20%', max: 0.80, min: 0.20 },
+  '60':  { label: '60% / 40%', max: 0.60, min: 0.40 },
   '50':  { label: '50% / 50%', max: 0.50, min: 0.50 },
 };
 
@@ -376,19 +377,42 @@ function positionCost(pid, code, state){
   return (counts[code] - expected) * 10;
 }
 
-/* Suggests a default goalkeeper: present players ranked by season GK time
-   played (least first) adjusted by their GK preference slider, so keeping
-   the dropdown untouched still drifts toward season-wide GK balance. */
+/* Field-category baselines (17-50%) fit comfortably inside the strength
+   min/max range, but GK's baseline is much smaller and shrinks with roster
+   size (roughly 1/N present players) — an absolute floor like 20% can sit
+   ABOVE that baseline and invert "avoid" into a boost. So GK preference
+   scales the baseline multiplicatively instead of interpolating toward a
+   fixed percentage. */
+const GK_LEVEL_MULTIPLIER = { '100': 8, '80': 4, '60': 1.8, '50': 1.15 };
+function gkTargetShare(baseline, level, strengthKey){
+  if(!level) return baseline;
+  const K = GK_LEVEL_MULTIPLIER[strengthKey] || 4;
+  const factor = Math.pow(K, Math.abs(level)/2);
+  const target = level > 0 ? baseline*factor : baseline/factor;
+  return Math.min(0.9, target);
+}
+
+/* Suggests a default goalkeeper: ranks present players by how far their
+   season-to-date GK share sits below their target share (baseline 1/N,
+   shifted by their GK preference), so a strong GK preference keeps winning
+   out as their count grows, not just in the first tie. */
 function suggestGoalkeeper(presentIds, excludeId){
   const seasonStats = computeSeasonPositionStats();
   const candidates = presentIds.filter(id=> id !== excludeId);
   if(!candidates.length) return presentIds[0] || null;
+
+  const totalGK = candidates.reduce((s,id)=> s + ((seasonStats[id]&&seasonStats[id].gkHalves)||0), 0);
+  const baseline = 1 / candidates.length;
+
   const scored = candidates.map(id=>{
     const p = State.players.find(pl=>pl.id===id);
-    const prefs = playerPrefs(p || {});
+    const level = playerPrefs(p || {}).GK || 0;
+    const target = gkTargetShare(baseline, level, State.settings.preferenceStrength);
+
     const gkHalves = (seasonStats[id] && seasonStats[id].gkHalves) || 0;
-    const score = gkHalves*10 - (prefs.GK||0)*3;
-    return { id, score };
+    const actualShare = totalGK > 0 ? gkHalves/totalGK : 0;
+    const deficit = actualShare - target; // negative = under target = more deserving
+    return { id, score: deficit*1000 + gkHalves + Math.random()*0.01 };
   });
   scored.sort((a,b)=> a.score - b.score);
   return scored[0].id;

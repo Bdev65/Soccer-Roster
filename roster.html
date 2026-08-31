@@ -482,6 +482,15 @@ function rosterViewHtml(){
       </div>
     </div>
     <div class="card">
+      <h2>Share Data</h2>
+      <p class="muted" style="margin-top:-6px;">Export everything — roster, saved games, settings — as a file. Another coach can import it on their own phone to get matching data.</p>
+      <div class="row" style="gap:10px;margin-top:10px;">
+        <button class="btn full" onclick="exportData()">Export Data</button>
+        <button class="btn full secondary" onclick="document.getElementById('importFileInput').click()">Import Data</button>
+      </div>
+      <input type="file" id="importFileInput" accept="application/json,.json" style="display:none;" onchange="handleImportFile(event)">
+    </div>
+    <div class="card">
       <h2>Add a Player</h2>
       <div class="row">
         <input type="text" id="newPlayerInput" placeholder="First name" maxlength="24" style="flex:3;">
@@ -503,6 +512,61 @@ function rosterViewHtml(){
       }
     </div>
   `;
+}
+
+function exportData(){
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    players: State.players,
+    games: State.games,
+    settings: State.settings,
+  };
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const slug = (State.settings.teamName || 'team').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'team';
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = slug + '-roster-data.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=> URL.revokeObjectURL(url), 1000);
+  showToast('Export ready — check your downloads');
+}
+
+function handleImportFile(event){
+  const file = event.target.files && event.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = async function(e){
+    try{
+      const data = JSON.parse(e.target.result);
+      if(!data || !Array.isArray(data.players) || typeof data.games !== 'object'){
+        showToast('That file doesn\'t look like a valid export.');
+        return;
+      }
+      const playerCount = data.players.length;
+      const gameCount = Object.keys(data.games || {}).length;
+      const ok = confirm('Import ' + playerCount + ' player(s) and ' + gameCount + ' saved game(s)? This replaces your current roster and saved games on this device.');
+      if(!ok) return;
+
+      State.players = data.players || [];
+      State.games = data.games || {};
+      State.settings = data.settings || State.settings;
+      await saveRoster(State.players);
+      await saveGames(State.games);
+      await saveSettings(State.settings);
+      applyTheme(State.settings.theme);
+      State.tab = 'roster';
+      render();
+      showToast('Import complete');
+    }catch(err){
+      showToast('Could not read that file — make sure it\'s an exported roster file.');
+    }
+  };
+  reader.readAsText(file);
+  event.target.value = '';
 }
 
 function updateTeamName(val){

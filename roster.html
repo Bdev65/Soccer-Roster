@@ -625,12 +625,12 @@ function computeSeasonRecord(){
 }
 
 function headerHtml(){
-  const titles = {roster:'Team Roster', newgame:'New Match Roster', saved:'Saved Rosters', live:'Live Game'};
+  const titles = {roster:'Team Roster', newgame:'New Match Roster', saved:'Saved Rosters', live:'Live Game', season:'Season Tracker'};
   const eyebrow = State.settings.teamName ? State.settings.teamName.toUpperCase() : 'MATCH DAY';
   const record = computeSeasonRecord();
   const recordHtml = record.played > 0 ? `
-    <div class="season-record">
-      <div class="season-record-label">Season W-L-T</div>
+    <div class="season-record" onclick="openSeasonView()" style="cursor:pointer;">
+      <div class="season-record-label">Season W-L-T ›</div>
       <div class="season-record-value">${record.w}-${record.l}-${record.t}</div>
     </div>
   ` : '';
@@ -648,7 +648,7 @@ function headerHtml(){
 }
 
 function tabsHtml(){
-  if(State.tab==='live') return '';
+  if(State.tab==='live' || State.tab==='season') return '';
   const tabs = [ ['roster','Roster'], ['newgame','New Game'], ['saved','Saved'] ];
   return `<nav class="tabs">${tabs.map(([k,label])=>
     `<button class="${State.tab===k?'active':''}" onclick="setTab('${k}')">${label}</button>`
@@ -660,7 +660,98 @@ function mainHtml(){
   if(State.tab==='newgame') return newGameViewHtml();
   if(State.tab==='saved') return savedViewHtml();
   if(State.tab==='live') return liveGameViewHtml();
+  if(State.tab==='season') return seasonViewHtml();
   return '';
+}
+
+function openSeasonView(){
+  State.seasonReturnTab = State.tab==='season' ? (State.seasonReturnTab||'roster') : State.tab;
+  State.tab = 'season';
+  render();
+}
+function closeSeasonView(){
+  State.tab = State.seasonReturnTab || 'roster';
+  render();
+}
+
+function computeSeasonResults(){
+  let w=0, l=0, t=0, goalsFor=0, goalsAgainst=0;
+  const games = [];
+  const scorers = {};
+  Object.values(State.games).forEach(g=>{
+    if(g.liveGame && g.liveGame.finalized){
+      const total = computeScore(g.liveGame.goals);
+      goalsFor += total.us; goalsAgainst += total.opp;
+      let result;
+      if(total.us > total.opp){ w++; result='W'; }
+      else if(total.us < total.opp){ l++; result='L'; }
+      else { t++; result='T'; }
+      games.push({ date:g.date, opponent:g.opponent||'', us:total.us, opp:total.opp, result });
+      g.liveGame.goals.forEach(entry=>{
+        if(entry.type==='us' && entry.scorerId){
+          scorers[entry.scorerId] = (scorers[entry.scorerId]||0) + 1;
+        }
+      });
+    }
+  });
+  games.sort((a,b)=> b.date.localeCompare(a.date));
+  return { record:{w,l,t,played:w+l+t}, games, goalsFor, goalsAgainst, scorers };
+}
+
+function seasonViewHtml(){
+  const data = computeSeasonResults();
+  const scorerRows = State.players
+    .map(p=> ({ p, goals: data.scorers[p.id]||0 }))
+    .sort((a,b)=> b.goals - a.goals);
+  const hasScorers = scorerRows.some(r=> r.goals>0);
+
+  const gameRows = data.games.map(g=>{
+    const badgeColor = g.result==='W' ? '#1B7A43' : g.result==='L' ? 'var(--danger)' : 'var(--slate)';
+    return `<tr>
+      <td class="rt-name">${formatDate(g.date)}</td>
+      <td>${g.opponent||'—'}</td>
+      <td>${g.us}–${g.opp}</td>
+      <td><span style="color:${badgeColor};font-weight:800;">${g.result}</span></td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <button class="btn secondary" style="margin-bottom:12px;" onclick="closeSeasonView()">← Back</button>
+
+    <div class="card">
+      <h2>Season Record</h2>
+      <div class="score-big">
+        <div class="score-side"><div class="score-label">Wins</div><div class="score-num" style="font-size:34px;">${data.record.w}</div></div>
+        <div class="score-side"><div class="score-label">Losses</div><div class="score-num" style="font-size:34px;">${data.record.l}</div></div>
+        <div class="score-side"><div class="score-label">Ties</div><div class="score-num" style="font-size:34px;">${data.record.t}</div></div>
+      </div>
+      <p class="muted" style="text-align:center;margin-top:10px;">${data.record.played} game${data.record.played===1?'':'s'} played · Goals ${data.goalsFor}–${data.goalsAgainst}</p>
+    </div>
+
+    <div class="card">
+      <h2>Game Results</h2>
+      ${data.games.length===0 ? `<p class="muted">No finished games yet.</p>` : `
+        <div class="rt-scroll">
+          <table class="rt-table">
+            <thead><tr><th class="rt-name">Date</th><th>Opponent</th><th>Score</th><th>Result</th></tr></thead>
+            <tbody>${gameRows}</tbody>
+          </table>
+        </div>
+      `}
+    </div>
+
+    <div class="card">
+      <h2>Player Scoring</h2>
+      ${!hasScorers ? `<p class="muted">No goals logged yet.</p>` : `
+        <div class="rt-scroll">
+          <table class="rt-table">
+            <thead><tr><th class="rt-name">Player</th><th>Goals</th></tr></thead>
+            <tbody>${scorerRows.map(r=>`<tr><td class="rt-name">${playerName(r.p.id)}</td><td style="font-weight:800;">${r.goals}</td></tr>`).join('')}</tbody>
+          </table>
+        </div>
+      `}
+    </div>
+  `;
 }
 
 /* ----- Roster tab ----- */

@@ -205,6 +205,7 @@ const State = {
   viewingShift: 0,
   swapSelection: null,
   showScorerPicker: false,
+  undoStack: [],
 };
 
 const POSITION_SLOTS = [
@@ -706,7 +707,7 @@ function togglePresent(id){
 function generateDraft(){
   const d = State.draft;
   d.generated = generateGameSchedule(d.presentIds, d.gkHalf1, d.gkHalf2, d.shiftsPerHalf);
-  State.viewingHalf = 0; State.viewingShift = 0; State.swapSelection = null;
+  State.viewingHalf = 0; State.viewingShift = 0; State.swapSelection = null; State.undoStack = [];
   render();
 }
 async function saveDraftGame(){
@@ -748,7 +749,7 @@ function savedViewHtml(){
         ${hasScore ? `<p style="font-weight:800;color:var(--pitch-deep);margin-top:8px;">${State.settings.teamName||'Us'} ${total.us} — ${total.opp} ${g.opponent||'Opponent'}${g.liveGame.finalized ? ' <span style="color:var(--pitch);font-weight:700;font-size:12px;">(Final)</span>' : ''}</p>` : ''}
         <button class="btn gold full" style="margin-top:12px;" onclick="openLiveGame('${g.date}')">${btnLabel}</button>
       </div>
-      ${generatedRosterHtml(g.halves, g.presentIds, g.gkHalf1, g.gkHalf2, false, g.date, g.opponent)}
+      ${generatedRosterHtml(g.halves, g.presentIds, g.gkHalf1, g.gkHalf2, true, g.date, g.opponent)}
       <button class="btn danger" style="margin-top:14px;" onclick="deleteGame('${g.date}')">Delete This Roster</button>
     `;
   }
@@ -769,7 +770,7 @@ function formatDate(iso){
   const dt = new Date(y, m-1, dd);
   return dt.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric', year:'numeric'});
 }
-function openGame(date){ State.activeGameDate = date; State.viewingHalf=0; State.viewingShift=0; State.swapSelection=null; render(); }
+function openGame(date){ State.activeGameDate = date; State.viewingHalf=0; State.viewingShift=0; State.swapSelection=null; State.undoStack=[]; render(); }
 function closeGame(){ State.activeGameDate = null; render(); }
 async function deleteGame(date){
   if(!confirm('Delete the roster for ' + formatDate(date) + '? This cannot be undone.')) return;
@@ -963,7 +964,12 @@ function generatedRosterHtml(halves, presentIds, gkHalf1, gkHalf2, editable, gam
         ${shift.benched.map(pid=>`<span class="bench-chip" ${editable?`onclick="selectSwap('bench','${pid}')"`:''}>${playerName(pid)}</span>`).join('')}
       </div>
     </div>
-    ${editable ? `<p class="swap-hint">Tap a player on the field, then tap another player (or a bench name) to swap them.</p>` : ''}
+    ${editable ? `
+      <div class="row" style="justify-content:space-between;align-items:flex-start;margin-top:6px;gap:10px;">
+        <p class="swap-hint" style="margin:0;flex:1;">Tap a player on the field, then tap another player (or a bench name) to swap them.</p>
+        ${State.undoStack && State.undoStack.length ? `<button class="btn secondary" style="flex-shrink:0;" onclick="undoLastSwap()">Undo Swap</button>` : ''}
+      </div>
+    ` : ''}
     ${reviewTablesHtml(halves, presentIds, gkHalf1, gkHalf2)}
   `;
   return html;
@@ -1043,16 +1049,15 @@ function reviewTablesHtml(halves, presentIds, gkHalf1, gkHalf2){
 
   const checkRows = presentIds.map(pid=>{
     const c = checks[pid];
-    const cell = (ok, type) => ok
+    const cell = ok => ok
       ? '<span style="color:#1B7A43;">✓</span>'
-      : `<span style="color:var(--danger);font-weight:800;">REVIEW</span><br>
-         <button class="btn secondary" style="padding:4px 9px;font-size:11px;margin-top:4px;" onclick="fixPlayer('${pid}','${type}')">Fix</button>`;
+      : '<span style="color:var(--danger);font-weight:800;">REVIEW</span>';
     return `
       <tr>
         <td class="rt-name">${playerName(pid)}</td>
-        <td>${cell(c.played,'played')}</td>
-        <td>${cell(c.variedPositions,'variety')}</td>
-        <td>${cell(c.benchOk,'bench')}</td>
+        <td>${cell(c.played)}</td>
+        <td>${cell(c.variedPositions)}</td>
+        <td>${cell(c.benchOk)}</td>
       </tr>
     `;
   }).join('');
@@ -1086,6 +1091,7 @@ function reviewTablesHtml(halves, presentIds, gkHalf1, gkHalf2){
         <strong>Played</strong>: got on the field or in goal at least once.
         <strong>Variety</strong>: no single exact position (e.g. Right Wing) took over half their field shifts.
         <strong>Bench</strong>: never sat 3+ shifts in a row.
+        Tap a player on the pitch above to swap them and adjust these.
       </p>
       <div class="rt-scroll">
         <table class="rt-table">
@@ -1208,94 +1214,6 @@ function exportRosterPDF(){
 function setHalf(h){ State.viewingHalf=h; State.viewingShift=0; State.swapSelection=null; render(); }
 function setShift(i){ State.viewingShift=i; State.swapSelection=null; render(); }
 
-function currentGameContext(){
-  if(State.tab==='newgame' && State.draft){
-    return { presentIds: State.draft.presentIds, gkHalf1: State.draft.gkHalf1, gkHalf2: State.draft.gkHalf2 };
-  }
-  if(State.tab==='saved' && State.activeGameDate){
-    const g = State.games[State.activeGameDate];
-    return { presentIds: g.presentIds, gkHalf1: g.gkHalf1, gkHalf2: g.gkHalf2 };
-  }
-  return null;
-}
-
-/* Swap pid out of their most-overused exact position and into their most-
-   underused one, trading places with whoever's in that shift playing the
-   target position. Touches exactly one shift, two players. */
-function fixVariety(pid, halves, ctx){
-  const stats = computeReviewStats(halves, ctx.presentIds, ctx.gkHalf1, ctx.gkHalf2);
-  const t = stats.totals[pid];
-  const overCode = ALL_CODES.reduce((a,b)=> t[b]>t[a] ? b : a, ALL_CODES[0]);
-  const underCode = ALL_CODES.reduce((a,b)=> t[b]<t[a] ? b : a, ALL_CODES[0]);
-  if(overCode === underCode) return null;
-
-  for(let hIdx=0; hIdx<halves.length; hIdx++){
-    const half = halves[hIdx];
-    for(let sIdx=0; sIdx<half.shifts.length; sIdx++){
-      const shift = half.shifts[sIdx];
-      if(shift.assign[overCode] !== pid) continue;
-      const partnerId = shift.assign[underCode];
-      if(!partnerId) continue;
-      shift.assign[overCode] = partnerId;
-      shift.assign[underCode] = pid;
-      return { hIdx, sIdx };
-    }
-  }
-  return null;
-}
-
-/* Break up pid's longest bench streak by swapping them onto the field in the
-   middle of that streak, trading with whoever in that shift has played the
-   most field time so far (giving that player a fair breather). */
-function fixBenchStreak(pid, halves, ctx){
-  const timeline = [];
-  halves.forEach((half,hIdx)=> half.shifts.forEach((shift,sIdx)=> timeline.push({hIdx,sIdx,shift})));
-
-  let run = [], bestRun = [];
-  timeline.forEach(item=>{
-    if(item.shift.benched.includes(pid)){ run.push(item); if(run.length>bestRun.length) bestRun = run.slice(); }
-    else run = [];
-  });
-  if(bestRun.length < 3) return null;
-
-  const target = bestRun[Math.floor(bestRun.length/2)];
-  const shift = target.shift;
-  const stats = computeReviewStats(halves, ctx.presentIds, ctx.gkHalf1, ctx.gkHalf2);
-  const codes = Object.keys(shift.assign);
-  if(!codes.length) return null;
-
-  codes.sort((a,b)=>{
-    const fa = stats.totals[shift.assign[a]], fb = stats.totals[shift.assign[b]];
-    const fieldA = fa.Defender+fa.Midfielder+fa.Wing+fa.Forward;
-    const fieldB = fb.Defender+fb.Midfielder+fb.Wing+fb.Forward;
-    return fieldB - fieldA;
-  });
-  const swapCode = codes[0];
-  const partnerId = shift.assign[swapCode];
-  shift.assign[swapCode] = pid;
-  const benchIdx = shift.benched.indexOf(pid);
-  shift.benched[benchIdx] = partnerId;
-  return { hIdx: target.hIdx, sIdx: target.sIdx };
-}
-
-async function fixPlayer(pid, type){
-  const halves = currentHalves();
-  const ctx = currentGameContext();
-  if(!halves || !ctx) return;
-
-  const result = type==='variety' ? fixVariety(pid, halves, ctx) : fixBenchStreak(pid, halves, ctx);
-
-  if(result){
-    if(State.tab==='saved' && State.activeGameDate){ await saveGames(State.games); }
-    State.viewingHalf = result.hIdx;
-    State.viewingShift = result.sIdx;
-    State.swapSelection = null;
-    render();
-    showToast('Adjusted ' + playerName(pid) + '\'s rotation');
-  } else {
-    showToast('No clean swap found — try a manual swap on the pitch instead.');
-  }
-}
 function currentHalves(){
   if(State.tab==='newgame') return State.draft.generated;
   if(State.tab==='saved' && State.activeGameDate) return State.games[State.activeGameDate].halves;
@@ -1322,11 +1240,33 @@ function selectSwap(type, key){
   }
   const pidA = getPid(a);
   const pidB = getPid(b);
+  if(pidA === pidB){ State.swapSelection = null; render(); return; }
+
+  if(!State.undoStack) State.undoStack = [];
+  State.undoStack.push(JSON.parse(JSON.stringify(halves)));
+  if(State.undoStack.length > 20) State.undoStack.shift();
+
   setPid(a, pidB);
   setPid(b, pidA);
 
+  if(State.tab==='saved' && State.activeGameDate){ saveGames(State.games); }
   State.swapSelection = null;
   render();
+}
+
+function setCurrentHalves(newHalves){
+  if(State.tab==='newgame' && State.draft) State.draft.generated = newHalves;
+  else if(State.tab==='saved' && State.activeGameDate) State.games[State.activeGameDate].halves = newHalves;
+}
+
+async function undoLastSwap(){
+  if(!State.undoStack || State.undoStack.length===0) return;
+  const snapshot = State.undoStack.pop();
+  setCurrentHalves(snapshot);
+  if(State.tab==='saved' && State.activeGameDate){ await saveGames(State.games); }
+  State.swapSelection = null;
+  render();
+  showToast('Swap undone');
 }
 
 function setTab(t){ State.tab = t; State.swapSelection=null; render(); }

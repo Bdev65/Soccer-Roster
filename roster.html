@@ -141,6 +141,14 @@
   .theme-swatch{width:36px;height:36px;border-radius:50%;border:2.5px solid #E4E9E4;cursor:pointer;padding:0;}
   .theme-swatch.selected{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold) inset, 0 0 0 1px var(--gold);}
 
+  .pref-panel{margin-top:12px;padding:12px;background:#F6F8F5;border-radius:10px;}
+  .pref-row{margin-bottom:14px;}
+  .pref-row:last-child{margin-bottom:0;}
+  .pref-row-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;}
+  .pref-cat-label{font-size:12.5px;font-weight:700;color:var(--pitch-deep);}
+  .pref-val-label{font-size:11.5px;font-weight:700;color:var(--slate);}
+  .pref-row input[type=range]{width:100%;accent-color:var(--pitch);}
+
   .score-big{display:flex;align-items:center;justify-content:center;gap:18px;margin-top:14px;}
   .score-side{text-align:center;flex:1;}
   .score-label{font-size:12px;font-weight:700;color:var(--slate);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:2px;}
@@ -187,7 +195,8 @@ async function loadGames(){
 async function saveGames(obj){ await storageSet('games', JSON.stringify(obj)); }
 async function loadSettings(){
   const v = await storageGet('settings');
-  try{ return v ? JSON.parse(v) : { teamName:'', theme:'green' }; }catch(e){ return { teamName:'', theme:'green' }; }
+  const fallback = { teamName:'', theme:'green', preferenceStrength:'80' };
+  try{ return v ? Object.assign({}, fallback, JSON.parse(v)) : fallback; }catch(e){ return fallback; }
 }
 async function saveSettings(obj){ await storageSet('settings', JSON.stringify(obj)); }
 
@@ -196,7 +205,7 @@ const State = {
   tab: 'roster',
   players: [],
   games: {},
-  settings: { teamName: '', theme: 'green' },
+  settings: { teamName: '', theme: 'green', preferenceStrength: '80' },
   loaded: false,
   // new-game draft
   draft: null,
@@ -206,6 +215,7 @@ const State = {
   swapSelection: null,
   showScorerPicker: false,
   undoStack: [],
+  expandedPrefsPid: null,
 };
 
 const POSITION_SLOTS = [
@@ -219,6 +229,27 @@ const POSITION_SLOTS = [
 const ALL_CODES = ['D1','D2','M','W1','W2','F'];
 const CODE_LABEL = { D1:'Left Back', D2:'Right Back', M:'Midfielder', W1:'Left Wing', W2:'Right Wing', F:'Forward' };
 const CODE_ABBR  = { D1:'LB', D2:'RB', M:'Mid', W1:'LW', W2:'RW', F:'Fwd', GK:'GK', Bench:'Bench' };
+
+// Field categories used for preferences. GK is tracked separately (see
+// gkSuggestion logic) since it's a manual per-half pick, not a rotating shift.
+const CATEGORY_CODES = { Defense:['D1','D2'], Midfield:['M'], Offense:['W1','W2','F'] };
+const CODE_CATEGORY = { D1:'Defense', D2:'Defense', M:'Midfield', W1:'Offense', W2:'Offense', F:'Offense' };
+const FIELD_CATEGORIES = ['Defense','Midfield','Offense'];
+const PREF_CATEGORIES = ['GK','Defense','Midfield','Offense'];
+const PREF_LABELS = { '-2':'Strongly Avoid', '-1':'Slightly Avoid', '0':'Neutral', '1':'Slightly Prefer', '2':'Strongly Prefer' };
+
+// Strength setting: at level +2, a category's target season share is pushed
+// up to `max`; at -2, pushed down to `min`. Both apply against that
+// category's natural baseline share (proportional to how many of the 6 field
+// slots it covers each shift).
+const PREF_STRENGTHS = {
+  '100': { label: '100% / 0%', max: 1.00, min: 0.00 },
+  '80':  { label: '80% / 20%', max: 0.80, min: 0.20 },
+  '50':  { label: '50% / 50%', max: 0.50, min: 0.50 },
+};
+
+function defaultPreferences(){ return { GK:0, Defense:0, Midfield:0, Offense:0 }; }
+function playerPrefs(p){ return p.preferences || defaultPreferences(); }
 
 const THEMES = {
   green:  { name:'Forest Green', pitchDeep:'#12312A', pitch:'#1B4D3E', pitchStripe:'#194533', gold:'#E8B923' },
@@ -269,6 +300,137 @@ function showToast(msg){
   toastTimer = setTimeout(()=>{ el.style.display = 'none'; }, 2000);
 }
 
+/* ---------- Season-wide stats & preference targets ---------- */
+function emptySeasonStat(){ return { D1:0,D2:0,M:0,W1:0,W2:0,F:0, gkHalves:0 }; }
+
+function accumulateGameStats(stats, game){
+  if(!game || !game.halves) return;
+  game.halves.forEach((half,hIdx)=>{
+    const gkId = hIdx===0 ? game.gkHalf1 : game.gkHalf2;
+    if(gkId){
+      if(!stats[gkId]) stats[gkId] = emptySeasonStat();
+      stats[gkId].gkHalves++;
+    }
+    half.shifts.forEach(shift=>{
+      Object.entries(shift.assign).forEach(([code,pid])=>{
+        if(!stats[pid]) stats[pid] = emptySeasonStat();
+        stats[pid][code]++;
+      });
+    });
+  });
+}
+
+/* Aggregates real historical shift/GK data across saved games. Pass a
+   filterFn(game)=>boolean to scope it (e.g. only games before a given date);
+   omit it to get the full season to date. */
+function computeSeasonPositionStats(filterFn){
+  const stats = {};
+  Object.values(State.games).forEach(g=>{
+    if(filterFn && !filterFn(g)) return;
+    accumulateGameStats(stats, g);
+  });
+  return stats;
+}
+
+function categoryBaselineShare(cat){ return CATEGORY_CODES[cat].length / 6; }
+
+/* Turns a player's -2..+2 preference sliders into normalized target shares
+   (summing to 1) across Defense/Midfield/Offense, using the team's strength
+   setting to define how far +2/-2 can push a category from its natural
+   baseline share. */
+function categoryTargetShares(prefs, strengthKey){
+  const strength = PREF_STRENGTHS[strengthKey] || PREF_STRENGTHS['80'];
+  const raw = {};
+  FIELD_CATEGORIES.forEach(cat=>{
+    const baseline = categoryBaselineShare(cat);
+    const level = (prefs && prefs[cat]) || 0;
+    let target = baseline;
+    if(level > 0) target = baseline + (level/2) * (strength.max - baseline);
+    else if(level < 0) target = baseline + (level/2) * (baseline - strength.min);
+    raw[cat] = Math.max(0, target);
+  });
+  const sum = FIELD_CATEGORIES.reduce((s,c)=> s+raw[c], 0) || 1;
+  const normalized = {};
+  FIELD_CATEGORIES.forEach(cat=> normalized[cat] = raw[cat]/sum);
+  return normalized;
+}
+
+/* Expected share of a single code, given a player's target category share
+   split evenly across however many codes make up that category (e.g. a 50%
+   Offense target splits into ~16.7% each across Left Wing/Right Wing/
+   Forward). Neutral players (all targets = baseline) get exactly 1/6 for
+   every code, matching the original unweighted behavior. */
+function expectedCodeShare(pid, code, state){
+  const cat = CODE_CATEGORY[code];
+  return state[pid].targetShares[cat] / CATEGORY_CODES[cat].length;
+}
+/* Cost contribution for putting pid in this code: how far their actual count
+   sits above/below what their target share would predict, scaled against
+   their own total field time so far -- this stays meaningfully influential
+   whether it's their 2nd shift or their 50th, instead of a fixed bias being
+   swamped by large season totals. */
+function positionCost(pid, code, state){
+  const counts = state[pid].positionCounts;
+  const total = counts.D1+counts.D2+counts.M+counts.W1+counts.W2+counts.F;
+  const expected = total * expectedCodeShare(pid, code, state);
+  return (counts[code] - expected) * 10;
+}
+
+/* Suggests a default goalkeeper: present players ranked by season GK time
+   played (least first) adjusted by their GK preference slider, so keeping
+   the dropdown untouched still drifts toward season-wide GK balance. */
+function suggestGoalkeeper(presentIds, excludeId){
+  const seasonStats = computeSeasonPositionStats();
+  const candidates = presentIds.filter(id=> id !== excludeId);
+  if(!candidates.length) return presentIds[0] || null;
+  const scored = candidates.map(id=>{
+    const p = State.players.find(pl=>pl.id===id);
+    const prefs = playerPrefs(p || {});
+    const gkHalves = (seasonStats[id] && seasonStats[id].gkHalves) || 0;
+    const score = gkHalves*10 - (prefs.GK||0)*3;
+    return { id, score };
+  });
+  scored.sort((a,b)=> a.score - b.score);
+  return scored[0].id;
+}
+
+/* Renders the Season Balance table: GK halves + Defense/Midfield/Offense
+   share per player, with a gold preference indicator next to any non-neutral
+   category. `stats` should already be scoped to whatever range of games
+   (and optionally an in-progress draft) the caller wants shown. */
+function seasonBalanceTableHtml(stats, title){
+  const rows = State.players.map(p=>{
+    const s = stats[p.id] || emptySeasonStat();
+    const fieldTotal = s.D1+s.D2+s.M+s.W1+s.W2+s.F;
+    const defShare = fieldTotal ? Math.round(100*(s.D1+s.D2)/fieldTotal) : 0;
+    const midShare = fieldTotal ? Math.round(100*s.M/fieldTotal) : 0;
+    const offShare = fieldTotal ? Math.round(100*(s.W1+s.W2+s.F)/fieldTotal) : 0;
+    const prefs = playerPrefs(p);
+    const tag = (lvl) => lvl ? ` <span style="color:var(--gold);font-weight:800;">${lvl>0?'+':''}${lvl}</span>` : '';
+    return `<tr>
+      <td class="rt-name">${playerName(p.id)}</td>
+      <td>${s.gkHalves}${tag(prefs.GK)}</td>
+      <td>${defShare}%${tag(prefs.Defense)}</td>
+      <td>${midShare}%${tag(prefs.Midfield)}</td>
+      <td>${offShare}%${tag(prefs.Offense)}</td>
+      <td style="color:var(--slate-light);">${fieldTotal}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div class="card" style="margin-top:18px;">
+      <h2>${title || 'Season Balance'}</h2>
+      <p class="muted" style="margin-top:-6px;">Position share across saved games. Gold numbers show a player's preference level for that category.</p>
+      <div class="rt-scroll">
+        <table class="rt-table">
+          <thead><tr><th class="rt-name">Player</th><th>GK Halves</th><th>Defense</th><th>Midfield</th><th>Offense</th><th>Shifts</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
 /* ---------- Rotation engine ---------- */
 
 /* Greedy min-cost matching: pair each given player with one of the given
@@ -281,9 +443,9 @@ function assignPlayersToCodes(playerIds, codes, state){
   const pairs = [];
   playerIds.forEach(pid=>{
     codes.forEach(code=>{
-      const cnt = state[pid].positionCounts[code];
+      const cost = positionCost(pid, code, state);
       const repeatPenalty = state[pid].lastPosition === code ? 5 : 0;
-      pairs.push({ pid, code, cost: cnt*10 + repeatPenalty + Math.random() });
+      pairs.push({ pid, code, cost: cost + repeatPenalty + Math.random() });
     });
   });
   pairs.sort((a,b)=> a.cost - b.cost);
@@ -308,9 +470,9 @@ function assignIncomingToVacancies(candidateIds, codes, state){
   candidateIds.forEach(pid=>{
     codes.forEach(code=>{
       const fairnessCost = state[pid].shiftsPlayed;
-      const posCost = state[pid].positionCounts[code];
+      const posCost = positionCost(pid, code, state);
       const repeatPenalty = state[pid].lastPosition === code ? 5 : 0;
-      pairs.push({ pid, code, cost: fairnessCost*100 + posCost*10 + repeatPenalty + Math.random() });
+      pairs.push({ pid, code, cost: fairnessCost*100 + posCost + repeatPenalty + Math.random() });
     });
   });
   pairs.sort((a,b)=> a.cost - b.cost);
@@ -325,14 +487,24 @@ function assignIncomingToVacancies(candidateIds, codes, state){
   return assign;
 }
 
-function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf){
+function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf, gameDate){
   const present = presentIds.map(id=>({id}));
   const state = {};
-  present.forEach(p=> state[p.id] = {
-    shiftsPlayed: 0,
-    consecutiveOnField: 0,
-    lastPosition: null,
-    positionCounts: { D1:0, D2:0, M:0, W1:0, W2:0, F:0 },
+  const seasonStats = gameDate
+    ? computeSeasonPositionStats(g=> g.date < gameDate)
+    : computeSeasonPositionStats(g=> false); // no date context (shouldn't normally happen) -> no season seed
+  const strengthKey = State.settings.preferenceStrength;
+
+  present.forEach(p=> {
+    const seed = seasonStats[p.id] || emptySeasonStat();
+    const playerObj = State.players.find(pl=>pl.id===p.id);
+    state[p.id] = {
+      shiftsPlayed: 0, // within-game only: keeps today's bench time fair regardless of season history
+      consecutiveOnField: 0,
+      lastPosition: null,
+      positionCounts: { D1:seed.D1, D2:seed.D2, M:seed.M, W1:seed.W1, W2:seed.W2, F:seed.F }, // season-seeded: drives which exact spot they get
+      targetShares: categoryTargetShares(playerPrefs(playerObj || {}), strengthKey),
+    };
   });
 
   const halfDefs = [ {gk:gkHalf1}, {gk:gkHalf2} ];
@@ -481,6 +653,12 @@ function rosterViewHtml(){
           <button class="theme-swatch ${State.settings.theme===key?'selected':''}" style="background:${t.pitch};" onclick="setTheme('${key}')" aria-label="${t.name}"></button>
         `).join('')}
       </div>
+      <div style="height:14px;"></div>
+      <label class="field-label">Preference Strength</label>
+      <select onchange="updatePreferenceStrength(this.value)">
+        ${Object.entries(PREF_STRENGTHS).map(([key,s])=>`<option value="${key}" ${State.settings.preferenceStrength===key?'selected':''}>${s.label} at Strongly Prefer/Avoid</option>`).join('')}
+      </select>
+      <p class="muted" style="margin-top:6px;">How far a player's "Strongly Prefer/Avoid" setting can push their season split for that category.</p>
     </div>
     <div class="card">
       <h2>Share Data</h2>
@@ -504,13 +682,50 @@ function rosterViewHtml(){
     <div class="card">
       <h2>Players</h2>
       ${State.players.length===0 ? `<p class="muted">No players yet — add your first player above.</p>` :
-        State.players.map(p=>`
-          <div class="player-chip">
-            <span class="name">${playerName(p.id)}</span>
-            <button class="btn danger" onclick="removePlayer('${p.id}')">Remove</button>
-          </div>
-        `).join('')
+        State.players.map(p=> playerChipHtml(p)).join('')
       }
+    </div>
+    ${seasonBalanceTableHtml(computeSeasonPositionStats())}
+  `;
+}
+
+function playerChipHtml(p){
+  const prefs = playerPrefs(p);
+  const expanded = State.expandedPrefsPid === p.id;
+  const summary = PREF_CATEGORIES.filter(c=> (prefs[c]||0) !== 0)
+    .map(c=> c + ' ' + (prefs[c]>0?'+':'') + prefs[c]).join(', ');
+  return `
+    <div class="player-chip" style="flex-direction:column;align-items:stretch;">
+      <div class="row" style="justify-content:space-between;">
+        <span class="name">${playerName(p.id)}</span>
+        <button class="btn danger" onclick="removePlayer('${p.id}')">Remove</button>
+      </div>
+      <button class="btn secondary" style="margin-top:8px;align-self:flex-start;font-size:12.5px;padding:6px 12px;" onclick="togglePrefsPanel('${p.id}')">
+        ${expanded ? 'Hide Preferences' : 'Preferences' + (summary ? ' (' + summary + ')' : '')}
+      </button>
+      ${expanded ? preferenceSlidersHtml(p, prefs) : ''}
+    </div>
+  `;
+}
+
+function preferenceSlidersHtml(p, prefs){
+  return `
+    <div class="pref-panel">
+      ${PREF_CATEGORIES.map(cat=>{
+        const val = prefs[cat] || 0;
+        const labelId = 'pref-label-' + p.id + '-' + cat;
+        return `
+          <div class="pref-row">
+            <div class="pref-row-top">
+              <span class="pref-cat-label">${cat === 'GK' ? 'Goalkeeper' : cat}</span>
+              <span class="pref-val-label" id="${labelId}">${PREF_LABELS[String(val)]}</span>
+            </div>
+            <input type="range" min="-2" max="2" step="1" value="${val}"
+              oninput="document.getElementById('${labelId}').textContent = PREF_LABELS[this.value];"
+              onchange="updatePlayerPreference('${p.id}','${cat}', this.value)">
+          </div>
+        `;
+      }).join('')}
     </div>
   `;
 }
@@ -582,6 +797,26 @@ function setTheme(key){
   render();
 }
 
+function updatePreferenceStrength(key){
+  State.settings.preferenceStrength = key;
+  saveSettings(State.settings);
+  render();
+}
+
+function togglePrefsPanel(pid){
+  State.expandedPrefsPid = State.expandedPrefsPid === pid ? null : pid;
+  render();
+}
+
+function updatePlayerPreference(pid, cat, val){
+  const p = State.players.find(pl=>pl.id===pid);
+  if(!p) return;
+  if(!p.preferences) p.preferences = defaultPreferences();
+  p.preferences[cat] = parseInt(val, 10);
+  saveRoster(State.players);
+  render();
+}
+
 function addPlayer(){
   const input = document.getElementById('newPlayerInput');
   const liInput = document.getElementById('newPlayerLastInitial');
@@ -604,12 +839,15 @@ function removePlayer(id){
 /* ----- New Game tab ----- */
 function ensureDraft(){
   if(!State.draft){
+    const presentIds = State.players.map(p=>p.id);
+    const gk1 = suggestGoalkeeper(presentIds, null);
+    const gk2 = suggestGoalkeeper(presentIds, gk1);
     State.draft = {
       date: new Date().toISOString().slice(0,10),
       opponent: '',
-      presentIds: State.players.map(p=>p.id),
-      gkHalf1: State.players[0] ? State.players[0].id : null,
-      gkHalf2: State.players[0] ? State.players[0].id : null,
+      presentIds,
+      gkHalf1: gk1 || (State.players[0] ? State.players[0].id : null),
+      gkHalf2: gk2 || (State.players[0] ? State.players[0].id : null),
       shiftsPerHalf: 3,
       generated: null,
     };
@@ -706,7 +944,7 @@ function togglePresent(id){
 }
 function generateDraft(){
   const d = State.draft;
-  d.generated = generateGameSchedule(d.presentIds, d.gkHalf1, d.gkHalf2, d.shiftsPerHalf);
+  d.generated = generateGameSchedule(d.presentIds, d.gkHalf1, d.gkHalf2, d.shiftsPerHalf, d.date);
   State.viewingHalf = 0; State.viewingShift = 0; State.swapSelection = null; State.undoStack = [];
   render();
 }
@@ -971,6 +1209,15 @@ function generatedRosterHtml(halves, presentIds, gkHalf1, gkHalf2, editable, gam
       </div>
     ` : ''}
     ${reviewTablesHtml(halves, presentIds, gkHalf1, gkHalf2)}
+    ${(() => {
+      // Season stats through (but not including a duplicate of) this game's
+      // date, with this game's own current halves folded in on top — so the
+      // table reflects the season picture including whatever's on screen,
+      // even if it's an unsaved draft or has just been swapped.
+      const stats = computeSeasonPositionStats(g => gameDate ? g.date < gameDate : true);
+      accumulateGameStats(stats, { halves, gkHalf1, gkHalf2 });
+      return seasonBalanceTableHtml(stats, 'Season Balance (Including This Game)');
+    })()}
   `;
   return html;
 }

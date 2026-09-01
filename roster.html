@@ -167,7 +167,10 @@
   .score-label{font-size:12px;font-weight:700;color:var(--slate);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:2px;}
   .score-num{font-family:'Anton';font-size:44px;color:var(--pitch-deep);line-height:1;}
   .score-sep{font-family:'Anton';font-size:30px;color:var(--slate-light);}
-  .goal-row{display:flex;align-items:center;justify-content:space-between;padding:9px 2px;border-bottom:1px solid #EEF1EC;font-size:14px;font-weight:600;}
+  .goal-row{display:flex;align-items:center;justify-content:space-between;padding:9px 2px;font-size:14px;font-weight:600;}
+  .goal-row-wrap{border-bottom:1px solid #EEF1EC;padding-bottom:2px;}
+  .goal-row-wrap:last-child{border-bottom:none;}
+  .assist-line{padding:0 2px 8px;font-size:12px;color:var(--slate-light);}
   .goal-row:last-child{border-bottom:none;}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -196,27 +199,45 @@ async function storageSet(key, value){
   }
   try{ localStorage.setItem(key, value); return true; }catch(e){ return false; }
 }
-async function loadRoster(){
-  const v = await storageGet('roster');
+async function storageDelete(key){
+  if(CLOUD){
+    try{ await window.storage.delete(key, false); return true; }catch(e){ return false; }
+  }
+  try{ localStorage.removeItem(key); return true; }catch(e){ return false; }
+}
+
+/* Team list + which one is active — not team-scoped themselves, obviously. */
+async function loadTeams(){
+  const v = await storageGet('teams');
   try{ return v ? JSON.parse(v) : []; }catch(e){ return []; }
 }
-async function saveRoster(list){ await storageSet('roster', JSON.stringify(list)); }
+async function saveTeams(arr){ await storageSet('teams', JSON.stringify(arr)); }
+async function loadActiveTeamId(){ return await storageGet('activeTeamId'); }
+async function saveActiveTeamId(id){ await storageSet('activeTeamId', id); }
+
+/* Everything else is namespaced under the current team so switching teams
+   swaps the whole roster/games/settings/season-history set cleanly. */
+async function loadRoster(){
+  const v = await storageGet('roster:' + State.activeTeamId);
+  try{ return v ? JSON.parse(v) : []; }catch(e){ return []; }
+}
+async function saveRoster(list){ await storageSet('roster:' + State.activeTeamId, JSON.stringify(list)); }
 async function loadGames(){
-  const v = await storageGet('games');
+  const v = await storageGet('games:' + State.activeTeamId);
   try{ return v ? JSON.parse(v) : {}; }catch(e){ return {}; }
 }
-async function saveGames(obj){ await storageSet('games', JSON.stringify(obj)); }
+async function saveGames(obj){ await storageSet('games:' + State.activeTeamId, JSON.stringify(obj)); }
 async function loadSettings(){
-  const v = await storageGet('settings');
+  const v = await storageGet('settings:' + State.activeTeamId);
   const fallback = { teamName:'', theme:'green', preferenceStrength:'80' };
   try{ return v ? Object.assign({}, fallback, JSON.parse(v)) : fallback; }catch(e){ return fallback; }
 }
-async function saveSettings(obj){ await storageSet('settings', JSON.stringify(obj)); }
+async function saveSettings(obj){ await storageSet('settings:' + State.activeTeamId, JSON.stringify(obj)); }
 async function loadPastSeasons(){
-  const v = await storageGet('pastSeasons');
+  const v = await storageGet('pastSeasons:' + State.activeTeamId);
   try{ return v ? JSON.parse(v) : []; }catch(e){ return []; }
 }
-async function savePastSeasons(arr){ await storageSet('pastSeasons', JSON.stringify(arr)); }
+async function savePastSeasons(arr){ await storageSet('pastSeasons:' + State.activeTeamId, JSON.stringify(arr)); }
 
 /* ---------- App state ---------- */
 const State = {
@@ -238,6 +259,11 @@ const State = {
   pastSeasons: [],
   seasonSubView: 'current', // 'current' | 'pastList' | 'pastDetail'
   viewingPastSeasonId: null,
+  teams: [],
+  activeTeamId: null,
+  assistPickerGoalId: null,
+  quickSubSuggestion: null,
+  editingAttendanceDate: null,
 };
 
 const POSITION_SLOTS = [
@@ -621,10 +647,25 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf, gameD
 }
 
 /* ---------- Rendering ---------- */
-function render(){
+function render(preserveScroll){
+  preserveScroll = preserveScroll !== false; // default true: in-place actions keep their scroll position
   document.title = State.settings.teamName ? (State.settings.teamName + ' — Roster') : 'Match Day Roster';
   const app = document.getElementById('app');
-  const scrollY = window.scrollY;
+
+  // Blur whatever's focused BEFORE the rebuild. Rebuilding innerHTML
+  // destroys the focused element (the button just tapped, a slider mid-
+  // drag), and some mobile browsers auto-scroll back to the top the moment
+  // focus is yanked away like that -- blurring first heads that off instead
+  // of only reacting to it afterward.
+  if(document.activeElement && document.activeElement.blur) document.activeElement.blur();
+
+  // The page body and the settings overlay (which has its own overflow-y:
+  // auto) are separate scroll containers, and rebuilding innerHTML destroys
+  // and recreates both, resetting each one's scroll independently.
+  const scrollY = preserveScroll ? window.scrollY : 0;
+  const oldOverlay = document.querySelector('.settings-overlay');
+  const overlayScrollTop = preserveScroll && oldOverlay ? oldOverlay.scrollTop : 0;
+
   app.innerHTML = `
     <div class="sticky-top">
       ${headerHtml()}
@@ -633,18 +674,78 @@ function render(){
     <main>${mainHtml()}</main>
     ${State.settingsOpen ? settingsOverlayHtml() : ''}
   `;
-  // Rebuilding innerHTML destroys whatever element had focus (the button
-  // just tapped, a slider mid-drag), and losing focus makes some mobile
-  // browsers auto-scroll back to the top of the page. Restore the scroll
-  // position on the next frame to counteract that -- explicit navigation
-  // actions (tab switches, opening a view) call resetScroll() themselves
-  // right before render() so they still start at the top as expected.
-  requestAnimationFrame(()=>{ window.scrollTo(0, scrollY); });
-}
-function resetScroll(){ window.scrollTo(0, 0); }
 
-function openSettings(){ State.settingsOpen = true; resetScroll(); render(); }
-function closeSettings(){ State.settingsOpen = false; resetScroll(); render(); }
+  const restore = ()=>{
+    window.scrollTo(0, scrollY);
+    const overlay = document.querySelector('.settings-overlay');
+    if(overlay) overlay.scrollTop = overlayScrollTop;
+  };
+  restore();
+  // Mobile browsers can apply their own corrective scroll a frame or two
+  // late; reasserting on the next couple of frames catches that too.
+  requestAnimationFrame(()=>{ restore(); requestAnimationFrame(restore); });
+}
+
+async function switchTeam(teamId){
+  if(teamId === State.activeTeamId) return;
+  State.activeTeamId = teamId;
+  await saveActiveTeamId(teamId);
+  State.players = await loadRoster();
+  State.games = await loadGames();
+  State.settings = await loadSettings();
+  State.pastSeasons = await loadPastSeasons();
+  State.draft = null;
+  State.activeGameDate = null;
+  State.expandedPrefsPid = null;
+  State.editingAttendanceDate = null;
+  State.tab = 'roster';
+  State.settingsOpen = false;
+  applyTheme(State.settings.theme);
+  render(false);
+  const team = State.teams.find(t=>t.id===teamId);
+  showToast('Switched to ' + (team ? team.name : 'team'));
+}
+
+async function addTeam(){
+  const name = prompt('New team name:');
+  if(!name || !name.trim()) return;
+  const newId = uid();
+  State.teams.push({ id:newId, name:name.trim() });
+  await saveTeams(State.teams);
+  await switchTeam(newId);
+}
+
+async function renameTeam(teamId){
+  const team = State.teams.find(t=>t.id===teamId);
+  if(!team) return;
+  const name = prompt('Rename team:', team.name);
+  if(!name || !name.trim()) return;
+  team.name = name.trim();
+  await saveTeams(State.teams);
+  render();
+}
+
+async function deleteTeam(teamId){
+  if(State.teams.length <= 1){ showToast('You need at least one team.'); return; }
+  const team = State.teams.find(t=>t.id===teamId);
+  const ok = confirm('Delete team "' + (team?team.name:'') + '" and ALL its data — roster, games, and season history? This cannot be undone.');
+  if(!ok) return;
+  State.teams = State.teams.filter(t=>t.id!==teamId);
+  await saveTeams(State.teams);
+  await storageDelete('roster:' + teamId);
+  await storageDelete('games:' + teamId);
+  await storageDelete('settings:' + teamId);
+  await storageDelete('pastSeasons:' + teamId);
+  if(teamId === State.activeTeamId){
+    await switchTeam(State.teams[0].id);
+  } else {
+    render();
+  }
+  showToast('Team deleted.');
+}
+
+function openSettings(){ State.settingsOpen = true; render(false); }
+function closeSettings(){ State.settingsOpen = false; render(false); }
 
 function computeSeasonRecord(){
   let w=0, l=0, t=0;
@@ -707,13 +808,11 @@ function openSeasonView(){
   State.seasonReturnTab = State.tab==='season' ? (State.seasonReturnTab||'roster') : State.tab;
   State.tab = 'season';
   State.seasonSubView = 'current';
-  resetScroll();
-  render();
+  render(false);
 }
 function closeSeasonView(){
   State.tab = State.seasonReturnTab || 'roster';
-  resetScroll();
-  render();
+  render(false);
 }
 
 function computeSeasonResults(gamesSource){
@@ -721,6 +820,7 @@ function computeSeasonResults(gamesSource){
   let w=0, l=0, t=0, goalsFor=0, goalsAgainst=0;
   const games = [];
   const scorers = {};
+  const assisters = {};
   Object.values(source).forEach(g=>{
     if(g.liveGame && g.liveGame.finalized){
       const total = computeScore(g.liveGame.goals);
@@ -734,11 +834,14 @@ function computeSeasonResults(gamesSource){
         if(entry.type==='us' && entry.scorerId){
           scorers[entry.scorerId] = (scorers[entry.scorerId]||0) + 1;
         }
+        if(entry.type==='us' && entry.assistId){
+          assisters[entry.assistId] = (assisters[entry.assistId]||0) + 1;
+        }
       });
     }
   });
   games.sort((a,b)=> b.date.localeCompare(a.date));
-  return { record:{w,l,t,played:w+l+t}, games, goalsFor, goalsAgainst, scorers };
+  return { record:{w,l,t,played:w+l+t}, games, goalsFor, goalsAgainst, scorers, assisters };
 }
 
 async function startNewSeason(){
@@ -802,8 +905,8 @@ function seasonSummaryBlockHtml(data, recordTitle){
       ${!hasScorers ? `<p class="muted">No goals logged yet.</p>` : `
         <div class="rt-scroll">
           <table class="rt-table">
-            <thead><tr><th class="rt-name">Player</th><th>Goals</th></tr></thead>
-            <tbody>${scorerRows.map(r=>`<tr><td class="rt-name">${playerName(r.p.id)}</td><td style="font-weight:800;">${r.goals}</td></tr>`).join('')}</tbody>
+            <thead><tr><th class="rt-name">Player</th><th>Goals</th><th>Assists</th></tr></thead>
+            <tbody>${scorerRows.map(r=>`<tr><td class="rt-name">${playerName(r.p.id)}</td><td style="font-weight:800;">${r.goals}</td><td>${data.assisters[r.p.id]||0}</td></tr>`).join('')}</tbody>
           </table>
         </div>
       `}
@@ -841,10 +944,10 @@ function currentSeasonViewHtml(){
   `;
 }
 
-function openPastSeasonsList(){ State.seasonSubView = 'pastList'; resetScroll(); render(); }
-function backToCurrentSeason(){ State.seasonSubView = 'current'; resetScroll(); render(); }
-function openPastSeasonDetail(id){ State.viewingPastSeasonId = id; State.seasonSubView = 'pastDetail'; resetScroll(); render(); }
-function backToPastList(){ State.seasonSubView = 'pastList'; resetScroll(); render(); }
+function openPastSeasonsList(){ State.seasonSubView = 'pastList'; render(false); }
+function backToCurrentSeason(){ State.seasonSubView = 'current'; render(false); }
+function openPastSeasonDetail(id){ State.viewingPastSeasonId = id; State.seasonSubView = 'pastDetail'; render(false); }
+function backToPastList(){ State.seasonSubView = 'pastList'; render(false); }
 
 function pastSeasonsListHtml(){
   const seasons = State.pastSeasons.slice().sort((a,b)=> b.endedAt.localeCompare(a.endedAt));
@@ -921,6 +1024,22 @@ function settingsOverlayHtml(){
         <button class="btn secondary" onclick="closeSettings()">✕ Close</button>
       </div>
       <div class="settings-overlay-body">
+        <div class="card">
+          <h2>Teams</h2>
+          <p class="muted" style="margin-top:-6px;">Coaching more than one team? Switch between them here — each has its own roster, games, and season history.</p>
+          <div style="margin-top:10px;">
+            ${State.teams.map(t=>`
+              <div class="player-chip" style="${t.id===State.activeTeamId ? 'border-color:var(--pitch);border-width:2px;' : ''}">
+                <span class="name" style="cursor:pointer;" onclick="switchTeam('${t.id}')">${t.id===State.activeTeamId?'✓ ':''}${t.name}</span>
+                <div class="row" style="gap:6px;">
+                  <button class="btn secondary" style="padding:6px 10px;font-size:12px;" onclick="renameTeam('${t.id}')">Rename</button>
+                  ${State.teams.length>1 ? `<button class="btn danger" onclick="deleteTeam('${t.id}')">Delete</button>` : ''}
+                </div>
+              </div>
+            `).join('')}
+          </div>
+          <button class="btn full secondary" style="margin-top:10px;" onclick="addTeam()">+ Add Team</button>
+        </div>
         <div class="card">
           <h2>Team Settings</h2>
           <label class="field-label">Team Name</label>
@@ -1297,6 +1416,37 @@ async function saveDraftGame(){
 }
 
 /* ----- Saved tab ----- */
+function toggleAttendanceEdit(date){
+  State.editingAttendanceDate = State.editingAttendanceDate===date ? null : date;
+  render();
+}
+async function toggleGameAttendance(date, pid){
+  const g = State.games[date];
+  if(!g) return;
+  if(g.presentIds.includes(pid)) g.presentIds = g.presentIds.filter(id=>id!==pid);
+  else g.presentIds.push(pid);
+  await saveGames(State.games);
+  render();
+}
+async function regenerateSavedGame(date){
+  const g = State.games[date];
+  if(!g) return;
+  if(g.presentIds.length < 7){ showToast('Need at least 7 present players to regenerate.'); return; }
+  const ok = confirm('Regenerate the rotation using the updated attendance? This replaces the current lineup plan for this game.');
+  if(!ok) return;
+  let gk1 = g.gkHalf1, gk2 = g.gkHalf2;
+  if(!g.presentIds.includes(gk1)) gk1 = suggestGoalkeeper(g.presentIds, null);
+  if(!g.presentIds.includes(gk2)) gk2 = suggestGoalkeeper(g.presentIds, gk1);
+  g.gkHalf1 = gk1;
+  g.gkHalf2 = gk2;
+  g.halves = generateGameSchedule(g.presentIds, gk1, gk2, g.shiftsPerHalf, g.date);
+  await saveGames(State.games);
+  State.editingAttendanceDate = null;
+  State.undoStack = [];
+  render(false);
+  showToast('Roster regenerated for updated attendance.');
+}
+
 function savedViewHtml(){
   const dates = Object.keys(State.games).sort((a,b)=> b.localeCompare(a));
   if(dates.length===0){
@@ -1316,6 +1466,26 @@ function savedViewHtml(){
         ${hasScore ? `<p style="font-weight:800;color:var(--pitch-deep);margin-top:8px;">${State.settings.teamName||'Us'} ${total.us} — ${total.opp} ${g.opponent||'Opponent'}${g.liveGame.finalized ? ' <span style="color:var(--pitch);font-weight:700;font-size:12px;">(Final)</span>' : ''}</p>` : ''}
         <button class="btn gold full" style="margin-top:12px;" onclick="openLiveGame('${g.date}')">${btnLabel}</button>
       </div>
+      ${!hasScore ? `
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;">
+          <h2 style="margin:0;">Attendance</h2>
+          <button class="btn secondary" onclick="toggleAttendanceEdit('${g.date}')">${State.editingAttendanceDate===g.date?'Hide':'Edit'}</button>
+        </div>
+        ${State.editingAttendanceDate===g.date ? `
+          <p class="muted" style="margin-top:8px;">Toggle anyone who can't make it (or add someone new), then regenerate to reshuffle the rotation fairly among who's left.</p>
+          <div style="margin-top:8px;">
+            ${State.players.map(p=>`
+              <div class="attend-row">
+                <span class="name" style="font-weight:600;">${playerName(p.id)}</span>
+                <div class="toggle ${g.presentIds.includes(p.id)?'on':''}" onclick="toggleGameAttendance('${g.date}','${p.id}')"><div class="knob"></div></div>
+              </div>
+            `).join('')}
+          </div>
+          <button class="btn gold full" style="margin-top:12px;" onclick="regenerateSavedGame('${g.date}')">Regenerate Roster</button>
+        ` : ''}
+      </div>
+      ` : ''}
       ${generatedRosterHtml(g.halves, g.presentIds, g.gkHalf1, g.gkHalf2, true, g.date, g.opponent)}
       <button class="btn danger" style="margin-top:14px;" onclick="deleteGame('${g.date}')">Delete This Roster</button>
     `;
@@ -1337,8 +1507,8 @@ function formatDate(iso){
   const dt = new Date(y, m-1, dd);
   return dt.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric', year:'numeric'});
 }
-function openGame(date){ State.activeGameDate = date; State.viewingHalf=0; State.viewingShift=0; State.swapSelection=null; State.undoStack=[]; resetScroll(); render(); }
-function closeGame(){ State.activeGameDate = null; resetScroll(); render(); }
+function openGame(date){ State.activeGameDate = date; State.viewingHalf=0; State.viewingShift=0; State.swapSelection=null; State.undoStack=[]; render(false); }
+function closeGame(){ State.activeGameDate = null; render(false); }
 async function deleteGame(date){
   if(!confirm('Delete the roster for ' + formatDate(date) + '? This cannot be undone.')) return;
   delete State.games[date];
@@ -1365,18 +1535,88 @@ function openLiveGame(date){
   State.viewingHalf = 0;
   State.viewingShift = 0;
   State.showScorerPicker = false;
-  resetScroll();
-  render();
+  State.quickSubSuggestion = null;
+  render(false);
 }
 function closeLiveGame(){
   State.tab = 'saved';
   State.showScorerPicker = false;
-  resetScroll();
+  State.quickSubSuggestion = null;
+  render(false);
+}
+function setLiveHalf(h){ State.viewingHalf = h; State.viewingShift = 0; State.showScorerPicker = false; State.quickSubSuggestion = null; render(); }
+function setLiveShift(i){ State.viewingShift = i; State.quickSubSuggestion = null; render(); }
+function toggleScorerPicker(){ State.showScorerPicker = !State.showScorerPicker; render(); }
+
+function computeQuickSubSuggestion(g, forcedOutCode){
+  const half = g.halves[State.viewingHalf];
+  const shiftIdx = State.viewingShift;
+  const shift = half.shifts[shiftIdx];
+  if(!shift.benched.length) return null;
+
+  let outCode, outPid;
+  if(forcedOutCode && shift.assign[forcedOutCode]){
+    outCode = forcedOutCode;
+    outPid = shift.assign[forcedOutCode];
+  } else {
+    // Who's been on the field longest without a break, up to and including
+    // this shift, within this half.
+    const streaks = {};
+    for(let s=0; s<=shiftIdx; s++){
+      const onFieldSet = new Set(Object.values(half.shifts[s].assign));
+      Object.keys(streaks).forEach(pid=>{ if(!onFieldSet.has(pid)) streaks[pid]=0; });
+      onFieldSet.forEach(pid=>{ streaks[pid]=(streaks[pid]||0)+1; });
+    }
+    const onFieldEntries = Object.entries(shift.assign); // [code, pid]
+    onFieldEntries.sort((a,b)=> (streaks[b[1]]||0) - (streaks[a[1]]||0));
+    [outCode, outPid] = onFieldEntries[0];
+  }
+
+  // Who on the bench has played the least so far this game.
+  const totals = {};
+  g.halves.forEach((h,hi)=>{
+    h.shifts.forEach((sh,si)=>{
+      if(hi>State.viewingHalf || (hi===State.viewingHalf && si>shiftIdx)) return;
+      Object.values(sh.assign).forEach(pid=>{ totals[pid]=(totals[pid]||0)+1; });
+    });
+  });
+  const benchSorted = shift.benched.slice().sort((a,b)=> (totals[a]||0) - (totals[b]||0));
+  const inPid = benchSorted[0];
+
+  return { outCode, outPid, inPid };
+}
+
+function requestQuickSub(){
+  const g = State.games[State.activeGameDate];
+  if(!g) return;
+  const suggestion = computeQuickSubSuggestion(g);
+  if(!suggestion){ showToast('No bench players available to sub in.'); return; }
+  State.quickSubSuggestion = suggestion;
   render();
 }
-function setLiveHalf(h){ State.viewingHalf = h; State.viewingShift = 0; State.showScorerPicker = false; render(); }
-function setLiveShift(i){ State.viewingShift = i; render(); }
-function toggleScorerPicker(){ State.showScorerPicker = !State.showScorerPicker; render(); }
+function selectQuickSubTarget(code){
+  const g = State.games[State.activeGameDate];
+  if(!g) return;
+  const suggestion = computeQuickSubSuggestion(g, code);
+  if(!suggestion){ showToast('No bench players available to sub in.'); return; }
+  State.quickSubSuggestion = suggestion;
+  render();
+}
+function dismissQuickSub(){ State.quickSubSuggestion = null; render(); }
+async function confirmQuickSub(){
+  const g = State.games[State.activeGameDate];
+  const s = State.quickSubSuggestion;
+  if(!g || !s) return;
+  const half = g.halves[State.viewingHalf];
+  const shift = half.shifts[State.viewingShift];
+  shift.assign[s.outCode] = s.inPid;
+  const idx = shift.benched.indexOf(s.inPid);
+  if(idx>=0) shift.benched[idx] = s.outPid; else shift.benched.push(s.outPid);
+  await saveGames(State.games);
+  State.quickSubSuggestion = null;
+  render();
+  showToast('Swapped ' + playerName(s.inPid) + ' in for ' + playerName(s.outPid));
+}
 
 async function finalizeGame(){
   const g = State.games[State.activeGameDate];
@@ -1400,7 +1640,7 @@ async function logGoal(type, scorerId){
   const g = State.games[State.activeGameDate];
   if(!g) return;
   ensureLiveGame(g);
-  g.liveGame.goals.push({ id: uid(), half: State.viewingHalf+1, type, scorerId: scorerId || null, ts: Date.now() });
+  g.liveGame.goals.push({ id: uid(), half: State.viewingHalf+1, type, scorerId: scorerId || null, assistId: null, ts: Date.now() });
   await saveGames(State.games);
   State.showScorerPicker = false;
   render();
@@ -1415,6 +1655,22 @@ async function deleteGoal(goalId){
   g.liveGame.goals = g.liveGame.goals.filter(x=>x.id!==goalId);
   await saveGames(State.games);
   render();
+}
+
+function toggleAssistPicker(goalId){
+  State.assistPickerGoalId = State.assistPickerGoalId === goalId ? null : goalId;
+  render();
+}
+async function setAssist(goalId, playerId){
+  const g = State.games[State.activeGameDate];
+  if(!g || !g.liveGame) return;
+  const entry = g.liveGame.goals.find(x=>x.id===goalId);
+  if(!entry) return;
+  entry.assistId = playerId;
+  State.assistPickerGoalId = null;
+  await saveGames(State.games);
+  render();
+  if(playerId) showToast('Assist logged for ' + playerName(playerId));
 }
 
 function liveGameViewHtml(){
@@ -1441,7 +1697,28 @@ function liveGameViewHtml(){
     else if(entry.type==='ownGoal') label = 'H' + entry.half + ' — Opponent own goal (' + teamLabel + ')';
     else label = 'H' + entry.half + ' — ' + oppLabel;
     const removeBtn = g.liveGame.finalized ? '' : `<button class="btn danger" onclick="deleteGoal('${entry.id}')">Remove</button>`;
-    return `<div class="goal-row"><span>${label}</span>${removeBtn}</div>`;
+
+    let assistLine = '';
+    if(entry.type==='us' && !g.liveGame.finalized){
+      if(entry.assistId){
+        assistLine = `<div class="assist-line">Assist: ${playerName(entry.assistId)} <span style="cursor:pointer;color:var(--danger);" onclick="setAssist('${entry.id}', null)">✕</span></div>`;
+      } else {
+        assistLine = `<div class="assist-line"><span style="cursor:pointer;color:var(--pitch);font-weight:700;" onclick="toggleAssistPicker('${entry.id}')">+ Assist</span></div>`;
+      }
+    } else if(entry.type==='us' && entry.assistId){
+      assistLine = `<div class="assist-line">Assist: ${playerName(entry.assistId)}</div>`;
+    }
+
+    let assistPicker = '';
+    if(State.assistPickerGoalId === entry.id){
+      const candidates = presentPlayers.filter(p=> p.id !== entry.scorerId);
+      assistPicker = `<div class="bench-chips" style="margin-top:6px;">
+        ${candidates.map(p=>`<span class="bench-chip" style="cursor:pointer;" onclick="setAssist('${entry.id}','${p.id}')">${playerName(p.id)}</span>`).join('')}
+        <span class="bench-chip" style="cursor:pointer;color:var(--slate-light);" onclick="toggleAssistPicker(null)">Cancel</span>
+      </div>`;
+    }
+
+    return `<div class="goal-row-wrap"><div class="goal-row"><span>${label}</span>${removeBtn}</div>${assistLine}${assistPicker}</div>`;
   }).join('') || `<p class="muted">No goals logged yet.</p>`;
 
   return `
@@ -1478,6 +1755,28 @@ function liveGameViewHtml(){
           </div>
         </div>
       ` : ''}
+    </div>
+    `}
+
+    ${g.liveGame.finalized ? '' : `
+    <div class="card">
+      <h2>Quick Sub</h2>
+      <p class="muted" style="margin-top:-6px;">For an injury or unplanned change — suggests who to bring off and on right now.</p>
+      ${State.quickSubSuggestion ? `
+        <div style="margin-top:10px;padding:12px;background:#F6F8F5;border-radius:10px;">
+          <p style="margin:0 0 10px;font-weight:700;">Bring on <span style="color:var(--pitch);">${playerName(State.quickSubSuggestion.inPid)}</span> for <span style="color:var(--danger);">${playerName(State.quickSubSuggestion.outPid)}</span> (${CODE_LABEL[State.quickSubSuggestion.outCode]})</p>
+          <div class="row" style="gap:10px;">
+            <button class="btn full" onclick="confirmQuickSub()">Confirm Swap</button>
+            <button class="btn full secondary" onclick="dismissQuickSub()">Dismiss</button>
+          </div>
+        </div>
+      ` : `
+        <button class="btn full secondary" style="margin-top:8px;" onclick="requestQuickSub()">Who Should Sub Next?</button>
+        <p class="muted" style="margin:12px 0 6px;">Or tap the specific player coming off (e.g. an injury):</p>
+        <div class="bench-chips">
+          ${Object.entries(shift.assign).map(([code,pid])=>`<span class="bench-chip" style="cursor:pointer;" onclick="selectQuickSubTarget('${code}')">${playerName(pid)} · ${CODE_ABBR[code]}</span>`).join('')}
+        </div>
+      `}
     </div>
     `}
 
@@ -1847,10 +2146,40 @@ async function undoLastSwap(){
   showToast('Swap undone');
 }
 
-function setTab(t){ State.tab = t; State.swapSelection=null; resetScroll(); render(); }
+function setTab(t){ State.tab = t; State.swapSelection=null; render(false); }
 
 /* ---------- Init ---------- */
 async function init(){
+  State.teams = await loadTeams();
+  State.activeTeamId = await loadActiveTeamId();
+
+  if(State.teams.length === 0){
+    // First run on this device since multi-team support was added: migrate
+    // any existing un-namespaced data into a new default team so nothing
+    // already saved gets orphaned.
+    const legacyRoster = await storageGet('roster');
+    const legacyGames = await storageGet('games');
+    const legacySettings = await storageGet('settings');
+    const legacyPastSeasons = await storageGet('pastSeasons');
+
+    const newTeamId = uid();
+    let teamName = 'My Team';
+    try{ if(legacySettings) teamName = JSON.parse(legacySettings).teamName || teamName; }catch(e){}
+
+    State.teams = [{ id:newTeamId, name:teamName }];
+    State.activeTeamId = newTeamId;
+    await saveTeams(State.teams);
+    await saveActiveTeamId(State.activeTeamId);
+
+    if(legacyRoster) await storageSet('roster:' + newTeamId, legacyRoster);
+    if(legacyGames) await storageSet('games:' + newTeamId, legacyGames);
+    if(legacySettings) await storageSet('settings:' + newTeamId, legacySettings);
+    if(legacyPastSeasons) await storageSet('pastSeasons:' + newTeamId, legacyPastSeasons);
+  } else if(!State.activeTeamId || !State.teams.some(t=>t.id===State.activeTeamId)){
+    State.activeTeamId = State.teams[0].id;
+    await saveActiveTeamId(State.activeTeamId);
+  }
+
   State.players = await loadRoster();
   State.games = await loadGames();
   State.settings = await loadSettings();

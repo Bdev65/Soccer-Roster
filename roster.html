@@ -212,6 +212,11 @@ async function loadSettings(){
   try{ return v ? Object.assign({}, fallback, JSON.parse(v)) : fallback; }catch(e){ return fallback; }
 }
 async function saveSettings(obj){ await storageSet('settings', JSON.stringify(obj)); }
+async function loadPastSeasons(){
+  const v = await storageGet('pastSeasons');
+  try{ return v ? JSON.parse(v) : []; }catch(e){ return []; }
+}
+async function savePastSeasons(arr){ await storageSet('pastSeasons', JSON.stringify(arr)); }
 
 /* ---------- App state ---------- */
 const State = {
@@ -230,6 +235,9 @@ const State = {
   undoStack: [],
   expandedPrefsPid: null,
   settingsOpen: false,
+  pastSeasons: [],
+  seasonSubView: 'current', // 'current' | 'pastList' | 'pastDetail'
+  viewingPastSeasonId: null,
 };
 
 const POSITION_SLOTS = [
@@ -616,6 +624,7 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf, gameD
 function render(){
   document.title = State.settings.teamName ? (State.settings.teamName + ' — Roster') : 'Match Day Roster';
   const app = document.getElementById('app');
+  const scrollY = window.scrollY;
   app.innerHTML = `
     <div class="sticky-top">
       ${headerHtml()}
@@ -624,10 +633,18 @@ function render(){
     <main>${mainHtml()}</main>
     ${State.settingsOpen ? settingsOverlayHtml() : ''}
   `;
+  // Rebuilding innerHTML destroys whatever element had focus (the button
+  // just tapped, a slider mid-drag), and losing focus makes some mobile
+  // browsers auto-scroll back to the top of the page. Restore the scroll
+  // position on the next frame to counteract that -- explicit navigation
+  // actions (tab switches, opening a view) call resetScroll() themselves
+  // right before render() so they still start at the top as expected.
+  requestAnimationFrame(()=>{ window.scrollTo(0, scrollY); });
 }
+function resetScroll(){ window.scrollTo(0, 0); }
 
-function openSettings(){ State.settingsOpen = true; render(); }
-function closeSettings(){ State.settingsOpen = false; render(); }
+function openSettings(){ State.settingsOpen = true; resetScroll(); render(); }
+function closeSettings(){ State.settingsOpen = false; resetScroll(); render(); }
 
 function computeSeasonRecord(){
   let w=0, l=0, t=0;
@@ -646,12 +663,13 @@ function headerHtml(){
   const titles = {roster:'Team Roster', newgame:'New Match Roster', saved:'Saved Rosters', live:'Live Game', season:'Season Tracker'};
   const eyebrow = State.settings.teamName ? State.settings.teamName.toUpperCase() : 'MATCH DAY';
   const record = computeSeasonRecord();
-  const recordHtml = record.played > 0 ? `
+  const recordValue = record.played > 0 ? (record.w+'-'+record.l+'-'+record.t) : '–-–-–';
+  const recordHtml = `
     <div class="season-record" onclick="openSeasonView()" style="cursor:pointer;">
       <div class="season-record-label">Season W-L-T ›</div>
-      <div class="season-record-value">${record.w}-${record.l}-${record.t}</div>
+      <div class="season-record-value">${recordValue}</div>
     </div>
-  ` : '';
+  `;
   return `
     <header class="topbar">
       <div class="header-top-row">
@@ -688,18 +706,22 @@ function mainHtml(){
 function openSeasonView(){
   State.seasonReturnTab = State.tab==='season' ? (State.seasonReturnTab||'roster') : State.tab;
   State.tab = 'season';
+  State.seasonSubView = 'current';
+  resetScroll();
   render();
 }
 function closeSeasonView(){
   State.tab = State.seasonReturnTab || 'roster';
+  resetScroll();
   render();
 }
 
-function computeSeasonResults(){
+function computeSeasonResults(gamesSource){
+  const source = gamesSource || State.games;
   let w=0, l=0, t=0, goalsFor=0, goalsAgainst=0;
   const games = [];
   const scorers = {};
-  Object.values(State.games).forEach(g=>{
+  Object.values(source).forEach(g=>{
     if(g.liveGame && g.liveGame.finalized){
       const total = computeScore(g.liveGame.goals);
       goalsFor += total.us; goalsAgainst += total.opp;
@@ -722,18 +744,21 @@ function computeSeasonResults(){
 async function startNewSeason(){
   const gameCount = Object.keys(State.games).length;
   if(gameCount===0){ showToast('No season data to clear.'); return; }
-  const ok = confirm('Start a new season? This permanently deletes all ' + gameCount + ' saved game(s) — rosters, rotations, scores, and goal logs. Your player roster and preferences will NOT be affected. This cannot be undone.');
+  const ok = confirm('Start a new season? This archives the current ' + gameCount + ' saved game(s) — you\'ll still be able to view them under Past Seasons — then clears them from the active season. Your player roster and preferences will NOT be affected. This cannot be undone.');
   if(!ok) return;
+  State.pastSeasons.push({ id: uid(), endedAt: new Date().toISOString(), games: JSON.parse(JSON.stringify(State.games)) });
+  await savePastSeasons(State.pastSeasons);
   State.games = {};
   State.draft = null;
   await saveGames(State.games);
   State.tab = 'roster';
   render();
-  showToast('New season started — roster and preferences kept.');
+  showToast('New season started — previous season archived.');
 }
 
-function seasonViewHtml(){
-  const data = computeSeasonResults();
+/* Shared record/results/scoring block, used for both the current season and
+   any archived past season. */
+function seasonSummaryBlockHtml(data, recordTitle){
   const scorerRows = State.players
     .map(p=> ({ p, goals: data.scorers[p.id]||0 }))
     .sort((a,b)=> b.goals - a.goals);
@@ -750,10 +775,8 @@ function seasonViewHtml(){
   }).join('');
 
   return `
-    <button class="btn secondary" style="margin-bottom:12px;" onclick="closeSeasonView()">← Back</button>
-
     <div class="card">
-      <h2>Season Record</h2>
+      <h2>${recordTitle}</h2>
       <div class="score-big">
         <div class="score-side"><div class="score-label">Wins</div><div class="score-num" style="font-size:34px;">${data.record.w}</div></div>
         <div class="score-side"><div class="score-label">Losses</div><div class="score-num" style="font-size:34px;">${data.record.l}</div></div>
@@ -785,10 +808,31 @@ function seasonViewHtml(){
         </div>
       `}
     </div>
+  `;
+}
+
+function seasonViewHtml(){
+  if(State.seasonSubView === 'pastList') return pastSeasonsListHtml();
+  if(State.seasonSubView === 'pastDetail') return pastSeasonDetailHtml();
+  return currentSeasonViewHtml();
+}
+
+function currentSeasonViewHtml(){
+  const data = computeSeasonResults();
+  return `
+    <button class="btn secondary" style="margin-bottom:12px;" onclick="closeSeasonView()">← Back</button>
+
+    ${seasonSummaryBlockHtml(data, 'Season Record')}
+
+    <div class="card">
+      <h2>Past Seasons</h2>
+      <p class="muted" style="margin-top:-6px;">${State.pastSeasons.length} archived season${State.pastSeasons.length===1?'':'s'}.</p>
+      <button class="btn full secondary" style="margin-top:8px;" onclick="openPastSeasonsList()">View Past Seasons</button>
+    </div>
 
     <div class="card">
       <h2>Season Management</h2>
-      <p class="muted" style="margin-top:-6px;">Starting a new season permanently clears all saved games — rotations, scores, and goal logs. Your player roster and preferences stay exactly as they are.</p>
+      <p class="muted" style="margin-top:-6px;">Starting a new season archives all saved games — rotations, scores, and goal logs — under Past Seasons, then clears the active season. Your player roster and preferences stay exactly as they are.</p>
       <div class="row" style="gap:10px;margin-top:10px;">
         <button class="btn full secondary" onclick="exportData()">Export Season Backup</button>
         <button class="btn full danger-solid" onclick="startNewSeason()">Start New Season</button>
@@ -796,6 +840,62 @@ function seasonViewHtml(){
     </div>
   `;
 }
+
+function openPastSeasonsList(){ State.seasonSubView = 'pastList'; resetScroll(); render(); }
+function backToCurrentSeason(){ State.seasonSubView = 'current'; resetScroll(); render(); }
+function openPastSeasonDetail(id){ State.viewingPastSeasonId = id; State.seasonSubView = 'pastDetail'; resetScroll(); render(); }
+function backToPastList(){ State.seasonSubView = 'pastList'; resetScroll(); render(); }
+
+function pastSeasonsListHtml(){
+  const seasons = State.pastSeasons.slice().sort((a,b)=> b.endedAt.localeCompare(a.endedAt));
+  return `
+    <button class="btn secondary" style="margin-bottom:12px;" onclick="backToCurrentSeason()">← Back to Current Season</button>
+    <div class="card">
+      <h2>Past Seasons</h2>
+      ${seasons.length===0 ? `<p class="muted">No past seasons yet. Use "Start New Season" to archive the current one.</p>` :
+        seasons.map(s=>{
+          const data = computeSeasonResults(s.games);
+          return `<div class="game-list-item" onclick="openPastSeasonDetail('${s.id}')">
+            <div><div class="date">Season ended ${formatDate(s.endedAt.slice(0,10))}</div><div class="sub">${data.record.played} game${data.record.played===1?'':'s'} · ${data.record.w}-${data.record.l}-${data.record.t}</div></div>
+            <span style="color:var(--slate-light);font-size:18px;">›</span>
+          </div>`;
+        }).join('')
+      }
+    </div>
+  `;
+}
+
+function pastSeasonDetailHtml(){
+  const season = State.pastSeasons.find(s=> s.id===State.viewingPastSeasonId);
+  if(!season){
+    return `<button class="btn secondary" style="margin-bottom:12px;" onclick="backToPastList()">← Back to Past Seasons</button><div class="card"><p class="muted">Season not found — it may have been deleted.</p></div>`;
+  }
+  const data = computeSeasonResults(season.games);
+  return `
+    <button class="btn secondary" style="margin-bottom:12px;" onclick="backToPastList()">← Back to Past Seasons</button>
+
+    ${seasonSummaryBlockHtml(data, 'Season Ended ' + formatDate(season.endedAt.slice(0,10)))}
+
+    <div class="card">
+      <h2>Manage This Season</h2>
+      <p class="muted" style="margin-top:-6px;">This permanently removes this archived season's data.</p>
+      <button class="btn danger-solid full" style="margin-top:10px;" onclick="deletePastSeason('${season.id}')">Delete This Past Season</button>
+    </div>
+  `;
+}
+
+async function deletePastSeason(id){
+  const season = State.pastSeasons.find(s=> s.id===id);
+  if(!season) return;
+  const ok = confirm('Permanently delete this archived season (ended ' + formatDate(season.endedAt.slice(0,10)) + ')? This cannot be undone.');
+  if(!ok) return;
+  State.pastSeasons = State.pastSeasons.filter(s=> s.id!==id);
+  await savePastSeasons(State.pastSeasons);
+  State.seasonSubView = 'pastList';
+  render();
+  showToast('Past season deleted.');
+}
+
 
 /* ----- Roster tab ----- */
 function rosterViewHtml(){
@@ -920,6 +1020,7 @@ function exportData(){
     players: State.players,
     games: State.games,
     settings: State.settings,
+    pastSeasons: State.pastSeasons,
   };
   const json = JSON.stringify(payload, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
@@ -948,15 +1049,18 @@ function handleImportFile(event){
       }
       const playerCount = data.players.length;
       const gameCount = Object.keys(data.games || {}).length;
-      const ok = confirm('Import ' + playerCount + ' player(s) and ' + gameCount + ' saved game(s)? This replaces your current roster and saved games on this device.');
+      const seasonCount = Array.isArray(data.pastSeasons) ? data.pastSeasons.length : 0;
+      const ok = confirm('Import ' + playerCount + ' player(s), ' + gameCount + ' saved game(s), and ' + seasonCount + ' past season(s)? This replaces your current roster, saved games, and season history on this device.');
       if(!ok) return;
 
       State.players = data.players || [];
       State.games = data.games || {};
       State.settings = data.settings || State.settings;
+      State.pastSeasons = Array.isArray(data.pastSeasons) ? data.pastSeasons : [];
       await saveRoster(State.players);
       await saveGames(State.games);
       await saveSettings(State.settings);
+      await savePastSeasons(State.pastSeasons);
       applyTheme(State.settings.theme);
       State.tab = 'roster';
       render();
@@ -1233,8 +1337,8 @@ function formatDate(iso){
   const dt = new Date(y, m-1, dd);
   return dt.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric', year:'numeric'});
 }
-function openGame(date){ State.activeGameDate = date; State.viewingHalf=0; State.viewingShift=0; State.swapSelection=null; State.undoStack=[]; render(); }
-function closeGame(){ State.activeGameDate = null; render(); }
+function openGame(date){ State.activeGameDate = date; State.viewingHalf=0; State.viewingShift=0; State.swapSelection=null; State.undoStack=[]; resetScroll(); render(); }
+function closeGame(){ State.activeGameDate = null; resetScroll(); render(); }
 async function deleteGame(date){
   if(!confirm('Delete the roster for ' + formatDate(date) + '? This cannot be undone.')) return;
   delete State.games[date];
@@ -1261,11 +1365,13 @@ function openLiveGame(date){
   State.viewingHalf = 0;
   State.viewingShift = 0;
   State.showScorerPicker = false;
+  resetScroll();
   render();
 }
 function closeLiveGame(){
   State.tab = 'saved';
   State.showScorerPicker = false;
+  resetScroll();
   render();
 }
 function setLiveHalf(h){ State.viewingHalf = h; State.viewingShift = 0; State.showScorerPicker = false; render(); }
@@ -1741,13 +1847,14 @@ async function undoLastSwap(){
   showToast('Swap undone');
 }
 
-function setTab(t){ State.tab = t; State.swapSelection=null; render(); }
+function setTab(t){ State.tab = t; State.swapSelection=null; resetScroll(); render(); }
 
 /* ---------- Init ---------- */
 async function init(){
   State.players = await loadRoster();
   State.games = await loadGames();
   State.settings = await loadSettings();
+  State.pastSeasons = await loadPastSeasons();
   applyTheme(State.settings.theme);
   State.loaded = true;
   render();

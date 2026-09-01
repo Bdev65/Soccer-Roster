@@ -1411,8 +1411,9 @@ async function saveDraftGame(){
   await saveGames(State.games);
   showToast('Roster saved for ' + d.date);
   State.draft = null;
+  State.activeGameDate = null;
   State.tab = 'saved';
-  render();
+  render(false);
 }
 
 /* ----- Saved tab ----- */
@@ -1782,6 +1783,9 @@ function liveGameViewHtml(){
 
     <div class="card">
       <h2>On the Field — Half ${activeHalf+1}, Shift ${State.viewingShift+1}</h2>
+      <div class="shift-tabs">
+        ${[0,1].map(h=>`<button class="${activeHalf===h?'active':''}" onclick="setLiveHalf(${h})">Half ${h+1}</button>`).join('')}
+      </div>
       <div class="shift-tabs">
         ${half.shifts.map((_,i)=>`<button class="${State.viewingShift===i?'active':''}" onclick="setLiveShift(${i})">Shift ${i+1}</button>`).join('')}
       </div>

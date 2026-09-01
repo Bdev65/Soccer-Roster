@@ -582,11 +582,19 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf, gameD
   const halfDefs = [ {gk:gkHalf1}, {gk:gkHalf2} ];
   const halves = [];
 
-  halfDefs.forEach(hd=>{
+  halfDefs.forEach((hd, hIdx)=>{
     const gkId = hd.gk;
     const fieldEligible = present.filter(p=>p.id!==gkId);
     const shifts = [];
     let currentAssign = null; // { slotCode: playerId } carried from the previous shift
+
+    // Whoever keeps goal in the OTHER half only gets this one half's worth of
+    // shifts to pick up any position variety at all -- a normal field player
+    // gets a second half to even things out, they don't. So instead of the
+    // usual "most deserving to rest" fairness sort, they get top priority to
+    // come off after exactly one shift, every time they're on the field.
+    const otherHalfGkId = hIdx===0 ? gkHalf2 : gkHalf1;
+    const halfTimeGkId = (otherHalfGkId && otherHalfGkId!==gkId) ? otherHalfGkId : null;
 
     for(let s=0; s<shiftsPerHalf; s++){
       let assign, benchedIds;
@@ -613,6 +621,13 @@ function generateGameSchedule(presentIds, gkHalf1, gkHalf2, shiftsPerHalf, gameD
           if(pb.consecutiveOnField !== pa.consecutiveOnField) return pb.consecutiveOnField - pa.consecutiveOnField;
           return pb.shiftsPlayed - pa.shiftsPlayed;
         });
+        if(halfTimeGkId){
+          const idx = sorted.findIndex(([,pid])=> pid===halfTimeGkId);
+          if(idx > 0){
+            const [item] = sorted.splice(idx,1);
+            sorted.unshift(item);
+          }
+        }
         const vacatedCodes = sorted.slice(0, numToSub).map(([code])=>code);
         const stayers = {};
         onFieldEntries.forEach(([code,pid])=>{ if(!vacatedCodes.includes(code)) stayers[code] = pid; });
@@ -709,10 +724,17 @@ async function switchTeam(teamId){
 async function addTeam(){
   const name = prompt('New team name:');
   if(!name || !name.trim()) return;
+  const trimmed = name.trim();
   const newId = uid();
-  State.teams.push({ id:newId, name:name.trim() });
+  State.teams.push({ id:newId, name:trimmed });
   await saveTeams(State.teams);
   await switchTeam(newId);
+  // switchTeam() just loaded this brand-new team's (empty) settings --
+  // give it the same name shown in the team switcher, or the header would
+  // fall back to "Match Day" until someone opens Team Settings manually.
+  State.settings.teamName = trimmed;
+  await saveSettings(State.settings);
+  render();
 }
 
 async function renameTeam(teamId){
@@ -720,8 +742,23 @@ async function renameTeam(teamId){
   if(!team) return;
   const name = prompt('Rename team:', team.name);
   if(!name || !name.trim()) return;
-  team.name = name.trim();
+  const trimmed = name.trim();
+  team.name = trimmed;
   await saveTeams(State.teams);
+
+  if(teamId === State.activeTeamId){
+    State.settings.teamName = trimmed;
+    await saveSettings(State.settings);
+  } else {
+    // Update that other team's stored settings directly, without switching
+    // into it, so its header stays correct whenever it's next opened.
+    const raw = await storageGet('settings:' + teamId);
+    let s;
+    try{ s = raw ? JSON.parse(raw) : { teamName:'', theme:'green', preferenceStrength:'80', lastExportAt:null }; }
+    catch(e){ s = { teamName:'', theme:'green', preferenceStrength:'80', lastExportAt:null }; }
+    s.teamName = trimmed;
+    await storageSet('settings:' + teamId, JSON.stringify(s));
+  }
   render();
 }
 

@@ -77,7 +77,7 @@
     background:var(--pitch);color:var(--chalk);border:none;border-radius:10px;
     padding:11px 16px;font-weight:700;font-size:14px;letter-spacing:0.02em;cursor:pointer;
   }
-  .btn:active{transform:scale(0.98);}
+  .btn:active{transform:scale(0.96);filter:brightness(0.9);}
   .btn.secondary{background:#E4E9E4;color:var(--pitch-deep);}
   .btn.gold{background:var(--gold);color:var(--pitch-deep);}
   .btn.danger{background:none;color:var(--danger);padding:6px 8px;font-size:13px;}
@@ -137,7 +137,7 @@
   .toast{
     position:fixed;bottom:20px;left:50%;transform:translateX(-50%);
     background:var(--pitch-deep);color:var(--chalk);padding:11px 20px;border-radius:30px;
-    font-size:13.5px;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,0.2);z-index:50;
+    font-size:13.5px;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,0.2);z-index:150;
     max-width:88%;text-align:center;
   }
   .warn-banner{background:#FCEFE9;border:1.5px solid #F0C4B0;color:var(--danger);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px;}
@@ -1222,8 +1222,13 @@ function exportData(){
 
 function findPlayerIdByName(name){
   if(!name) return null;
-  const target = String(name).trim().toLowerCase();
-  const match = State.players.find(p=> p.name.trim().toLowerCase() === target);
+  const target = String(name).trim().toLowerCase().replace(/\.$/,'');
+  const match = State.players.find(p=>{
+    const rawName = (p.name||'').trim().toLowerCase().replace(/\.$/,'');
+    const firstToken = rawName.split(/\s+/)[0];
+    const fullDisplay = playerName(p.id).trim().toLowerCase().replace(/\.$/,'');
+    return rawName === target || firstToken === target || fullDisplay === target;
+  });
   return match ? match.id : null;
 }
 

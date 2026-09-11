@@ -1108,6 +1108,12 @@ function settingsOverlayHtml(){
           ${backupReminderHtml()}
         </div>
         <div class="card">
+          <h2>Import Single Game</h2>
+          <p class="muted" style="margin-top:-6px;">Paste a single game's rotation (matched to your roster by player first name) to add it as a saved game — your existing roster and other saved games are left untouched.</p>
+          <textarea id="mergeGameInput" rows="6" style="width:100%;font-family:monospace;font-size:11px;border:1.5px solid #D8DEDA;border-radius:9px;padding:10px;margin-top:8px;" placeholder="Paste game JSON here"></textarea>
+          <button class="btn full gold" style="margin-top:10px;" onclick="mergeImportGameFromTextarea()">Import This Game</button>
+        </div>
+        <div class="card">
           <h2>Add a Player</h2>
           <div class="row">
             <input type="text" id="newPlayerInput" placeholder="First name" maxlength="24" style="flex:3;">
@@ -1212,6 +1218,83 @@ function exportData(){
   saveSettings(State.settings);
   render();
   showToast('Export ready — check your downloads');
+}
+
+function findPlayerIdByName(name){
+  if(!name) return null;
+  const target = String(name).trim().toLowerCase();
+  const match = State.players.find(p=> p.name.trim().toLowerCase() === target);
+  return match ? match.id : null;
+}
+
+/* Merges one externally-created game (e.g. another coach's rotation sheet)
+   into the current team's saved games, matching players by first name
+   against the existing roster. Only touches State.games[spec.date] --
+   never the roster, other games, or settings. */
+async function mergeImportGame(spec){
+  const unmatched = new Set();
+  const nameToId = (name)=>{
+    const id = findPlayerIdByName(name);
+    if(!id) unmatched.add(name);
+    return id;
+  };
+
+  const gkHalf1 = nameToId(spec.gkHalf1Name);
+  const gkHalf2 = nameToId(spec.gkHalf2Name);
+
+  const halves = (spec.halves||[]).map(half=> ({
+    shifts: (half.shifts||[]).map(shift=>{
+      const assign = {};
+      Object.entries(shift.assign||{}).forEach(([code,name])=>{
+        assign[code] = nameToId(name);
+      });
+      const benched = (shift.benched||[]).map(nameToId);
+      return { assign, benched };
+    })
+  }));
+
+  if(unmatched.size){
+    showToast('No match on roster for: ' + Array.from(unmatched).join(', ') + '. Check spelling and try again.');
+    return false;
+  }
+  if(!spec.date){ showToast('Missing a game date.'); return false; }
+
+  const presentIds = new Set([gkHalf1, gkHalf2].filter(Boolean));
+  halves.forEach(h=> h.shifts.forEach(s=>{
+    Object.values(s.assign).forEach(id=> id && presentIds.add(id));
+    s.benched.forEach(id=> id && presentIds.add(id));
+  }));
+
+  if(State.games[spec.date] && !confirm('A saved game for ' + spec.date + ' already exists. Overwrite it?')) return false;
+
+  State.games[spec.date] = {
+    date: spec.date,
+    opponent: spec.opponent || '',
+    presentIds: Array.from(presentIds),
+    gkHalf1, gkHalf2,
+    shiftsPerHalf: spec.shiftsPerHalf || (halves[0] ? halves[0].shifts.length : 3),
+    halves,
+  };
+  await saveGames(State.games);
+  return true;
+}
+
+function mergeImportGameFromTextarea(){
+  const el = document.getElementById('mergeGameInput');
+  if(!el || !el.value.trim()){ showToast('Paste the game JSON first.'); return; }
+  let spec;
+  try{ spec = JSON.parse(el.value); }
+  catch(e){ showToast('That doesn\'t look like valid JSON — check for a stray comma or bracket.'); return; }
+
+  mergeImportGame(spec).then(ok=>{
+    if(ok){
+      el.value = '';
+      showToast('Game imported for ' + spec.date);
+      State.tab = 'saved';
+      State.activeGameDate = null;
+      render(false);
+    }
+  });
 }
 
 function handleImportFile(event){

@@ -141,6 +141,8 @@
     max-width:88%;text-align:center;
   }
   .warn-banner{background:#FCEFE9;border:1.5px solid #F0C4B0;color:var(--danger);border-radius:10px;padding:10px 12px;font-size:13px;margin-bottom:12px;}
+  .timer-alert{animation:timerFlash 1s ease-in-out infinite;}
+  @keyframes timerFlash{ 0%,100%{background:var(--card);} 50%{background:#FCEFE9;} }
   .swap-hint{font-size:12px;color:var(--slate-light);margin:6px 2px 0;}
   .selected-for-swap{outline:2.5px solid var(--gold);outline-offset:1px;}
 
@@ -263,7 +265,9 @@ const State = {
   activeTeamId: null,
   assistPickerGoalId: null,
   quickSubSuggestion: null,
+  matchTimer: { running:false, expired:false, endsAt:null, half:null, shiftIndex:null },
   editingAttendanceDate: null,
+  editingGameDetailsDate: null,
 };
 
 const POSITION_SLOTS = [
@@ -388,15 +392,11 @@ function categoryBaselineShare(cat){ return CATEGORY_CODES[cat].length / 6; }
    setting to define how far +2/-2 can push a category from its natural
    baseline share. */
 function categoryTargetShares(prefs, strengthKey){
-  const strength = PREF_STRENGTHS[strengthKey] || PREF_STRENGTHS['80'];
   const raw = {};
   FIELD_CATEGORIES.forEach(cat=>{
     const baseline = categoryBaselineShare(cat);
     const level = (prefs && prefs[cat]) || 0;
-    let target = baseline;
-    if(level > 0) target = baseline + (level/2) * (strength.max - baseline);
-    else if(level < 0) target = baseline + (level/2) * (baseline - strength.min);
-    raw[cat] = Math.max(0, target);
+    raw[cat] = gkTargetShare(baseline, level, strengthKey); // multiplicative scaling -- always correctly directioned regardless of baseline size
   });
   const sum = FIELD_CATEGORIES.reduce((s,c)=> s+raw[c], 0) || 1;
   const normalized = {};
@@ -1426,6 +1426,7 @@ function ensureDraft(){
       gkHalf1: gk1 || (State.players[0] ? State.players[0].id : null),
       gkHalf2: gk2 || (State.players[0] ? State.players[0].id : null),
       shiftsPerHalf: 3,
+      halfLengthMinutes: 24,
       generated: null,
     };
   } else {
@@ -1506,6 +1507,10 @@ function newGameViewHtml(){
           <span class="val">${d.shiftsPerHalf}</span>
           <button onclick="updateDraft('shiftsPerHalf', ${Math.min(5,d.shiftsPerHalf+1)})">+</button>
         </div>
+        <div style="height:14px;"></div>
+        <label class="field-label">Half Length (minutes)</label>
+        <input type="number" min="5" max="60" value="${d.halfLengthMinutes||24}" onchange="updateDraft('halfLengthMinutes', this.value)">
+        <p class="muted" style="margin-top:6px;">Used for the live rotation timer during the game.</p>
       </div>
 
       <button class="btn gold full" style="padding:14px;font-size:15px;" onclick="generateDraft()">Generate Roster</button>
@@ -1522,9 +1527,9 @@ function newGameViewHtml(){
 
 function updateDraft(key, val){
   ensureDraft();
-  if(key==='shiftsPerHalf') val = parseInt(val,10);
+  if(key==='shiftsPerHalf' || key==='halfLengthMinutes') val = parseInt(val,10) || 24;
   State.draft[key] = val;
-  if(key!=='opponent') State.draft.generated = null;
+  if(key!=='opponent' && key!=='halfLengthMinutes') State.draft.generated = null;
   render();
 }
 function togglePresent(id){
@@ -1553,6 +1558,7 @@ async function saveDraftGame(){
     gkHalf1: d.gkHalf1,
     gkHalf2: d.gkHalf2,
     shiftsPerHalf: d.shiftsPerHalf,
+    halfLengthMinutes: d.halfLengthMinutes || 24,
     halves: d.generated,
   };
   await saveGames(State.games);
@@ -1564,6 +1570,35 @@ async function saveDraftGame(){
 }
 
 /* ----- Saved tab ----- */
+function toggleGameDetailsEdit(date){
+  State.editingGameDetailsDate = State.editingGameDetailsDate===date ? null : date;
+  render();
+}
+async function saveGameDetailsEdit(oldDate){
+  const g = State.games[oldDate];
+  if(!g) return;
+  const dateInput = document.getElementById('editGameDate');
+  const opponentInput = document.getElementById('editGameOpponent');
+  const newDate = dateInput ? dateInput.value : oldDate;
+  const newOpponent = opponentInput ? opponentInput.value.trim() : g.opponent;
+
+  if(!newDate){ showToast('Please pick a valid date.'); return; }
+
+  if(newDate !== oldDate){
+    if(State.games[newDate] && !confirm('A saved game already exists on ' + newDate + '. Overwrite it?')) return;
+    delete State.games[oldDate];
+    g.date = newDate;
+    State.games[newDate] = g;
+    if(State.activeGameDate === oldDate) State.activeGameDate = newDate;
+  }
+  g.opponent = newOpponent || '';
+
+  await saveGames(State.games);
+  State.editingGameDetailsDate = null;
+  render(false);
+  showToast('Game details updated.');
+}
+
 function toggleAttendanceEdit(date){
   State.editingAttendanceDate = State.editingAttendanceDate===date ? null : date;
   render();
@@ -1614,6 +1649,23 @@ function savedViewHtml(){
         ${hasScore ? `<p style="font-weight:800;color:var(--pitch-deep);margin-top:8px;">${State.settings.teamName||'Us'} ${total.us} — ${total.opp} ${g.opponent||'Opponent'}${g.liveGame.finalized ? ' <span style="color:var(--pitch);font-weight:700;font-size:12px;">(Final)</span>' : ''}</p>` : ''}
         <button class="btn gold full" style="margin-top:12px;" onclick="openLiveGame('${g.date}')">${btnLabel}</button>
       </div>
+      ${!hasScore ? `
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:center;">
+          <h2 style="margin:0;">Game Details</h2>
+          <button class="btn secondary" onclick="toggleGameDetailsEdit('${g.date}')">${State.editingGameDetailsDate===g.date?'Hide':'Edit'}</button>
+        </div>
+        ${State.editingGameDetailsDate===g.date ? `
+          <p class="muted" style="margin-top:8px;">Fix the date or opponent name — this doesn't touch the roster or rotation.</p>
+          <label class="field-label" style="margin-top:8px;">Game Date</label>
+          <input type="date" id="editGameDate" value="${g.date}">
+          <div style="height:12px;"></div>
+          <label class="field-label">Opponent</label>
+          <input type="text" id="editGameOpponent" value="${g.opponent||''}" placeholder="e.g. Green Dragons" maxlength="40">
+          <button class="btn gold full" style="margin-top:12px;" onclick="saveGameDetailsEdit('${g.date}')">Save Changes</button>
+        ` : ''}
+      </div>
+      ` : ''}
       ${!hasScore ? `
       <div class="card">
         <div class="row" style="justify-content:space-between;align-items:center;">
@@ -1684,6 +1736,7 @@ function openLiveGame(date){
   State.viewingShift = 0;
   State.showScorerPicker = false;
   State.quickSubSuggestion = null;
+  State.matchTimer = { running:false, expired:false, endsAt:null, half:null, shiftIndex:null };
   render(false);
 }
 function closeLiveGame(){
@@ -1692,9 +1745,67 @@ function closeLiveGame(){
   State.quickSubSuggestion = null;
   render(false);
 }
-function setLiveHalf(h){ State.viewingHalf = h; State.viewingShift = 0; State.showScorerPicker = false; State.quickSubSuggestion = null; render(); }
-function setLiveShift(i){ State.viewingShift = i; State.quickSubSuggestion = null; render(); }
+function setLiveHalf(h){
+  State.viewingHalf = h; State.viewingShift = 0; State.showScorerPicker = false; State.quickSubSuggestion = null;
+  State.matchTimer = { running:false, expired:false, endsAt:null, half:null, shiftIndex:null };
+  render();
+}
+function setLiveShift(i){
+  State.viewingShift = i; State.quickSubSuggestion = null;
+  State.matchTimer = { running:false, expired:false, endsAt:null, half:null, shiftIndex:null };
+  render();
+}
 function toggleScorerPicker(){ State.showScorerPicker = !State.showScorerPicker; render(); }
+
+function shiftDurationSeconds(g){
+  const halfLen = (g.halfLengthMinutes || 24) * 60;
+  return Math.max(10, Math.round(halfLen / g.shiftsPerHalf));
+}
+function startShiftTimer(){
+  const g = State.games[State.activeGameDate];
+  if(!g) return;
+  const duration = shiftDurationSeconds(g);
+  State.matchTimer = { running:true, expired:false, endsAt: Date.now()+duration*1000, half: State.viewingHalf, shiftIndex: State.viewingShift };
+  render();
+}
+function stopMatchTimer(){
+  State.matchTimer = { running:false, expired:false, endsAt:null, half:null, shiftIndex:null };
+  render();
+}
+function acknowledgeRotation(){
+  const g = State.games[State.activeGameDate];
+  if(!g) return;
+  const half = g.halves[State.viewingHalf];
+  const isLastShift = State.viewingShift >= half.shifts.length - 1;
+  if(isLastShift){
+    State.matchTimer = { running:false, expired:false, endsAt:null, half:null, shiftIndex:null };
+    render();
+  } else {
+    State.viewingShift += 1;
+    startShiftTimer();
+  }
+}
+
+// Ticks once a second. Only patches the countdown text directly (no full
+// render) unless the timer just expired, which is a real UI-mode change.
+setInterval(()=>{
+  const t = State.matchTimer;
+  if(!t || !t.running) return;
+  const remaining = t.endsAt - Date.now();
+  if(remaining <= 0){
+    t.running = false;
+    t.expired = true;
+    if(navigator && navigator.vibrate){ try{ navigator.vibrate([200,100,200,100,400]); }catch(e){} }
+    render();
+    return;
+  }
+  const el = document.getElementById('timerCountdownText');
+  if(el){
+    const totalSec = Math.ceil(remaining/1000);
+    const m = Math.floor(totalSec/60), s = totalSec % 60;
+    el.textContent = m + ':' + String(s).padStart(2,'0');
+  }
+}, 1000);
 
 function computeQuickSubSuggestion(g, forcedOutCode){
   const half = g.halves[State.viewingHalf];
@@ -1821,6 +1932,46 @@ async function setAssist(goalId, playerId){
   if(playerId) showToast('Assist logged for ' + playerName(playerId));
 }
 
+function matchTimerCardHtml(g){
+  const t = State.matchTimer;
+  const isCurrentContext = t && t.half===State.viewingHalf && t.shiftIndex===State.viewingShift;
+
+  if(t && t.running && isCurrentContext){
+    const remaining = Math.max(0, t.endsAt - Date.now());
+    const totalSec = Math.ceil(remaining/1000);
+    const m = Math.floor(totalSec/60), s = totalSec % 60;
+    return `
+      <div class="card">
+        <h2>Match Timer</h2>
+        <div style="text-align:center;">
+          <div id="timerCountdownText" style="font-family:'Anton';font-size:44px;color:var(--pitch-deep);">${m}:${String(s).padStart(2,'0')}</div>
+          <p class="muted" style="margin:2px 0 12px;">until next rotation</p>
+          <button class="btn secondary full" onclick="stopMatchTimer()">Stop Timer</button>
+        </div>
+      </div>
+    `;
+  }
+  if(t && t.expired && isCurrentContext){
+    return `
+      <div class="card timer-alert">
+        <h2>Match Timer</h2>
+        <div style="text-align:center;">
+          <div style="font-size:26px;font-weight:800;color:var(--danger);">⏰ TIME TO ROTATE</div>
+          <button class="btn gold full" style="margin-top:14px;" onclick="acknowledgeRotation()">I've Rotated — Continue</button>
+        </div>
+      </div>
+    `;
+  }
+  const shiftLabel = 'Half ' + (State.viewingHalf+1) + ', Shift ' + (State.viewingShift+1);
+  return `
+    <div class="card">
+      <h2>Match Timer</h2>
+      <p class="muted" style="margin-top:-6px;">Counts down the current shift (~${shiftDurationSeconds(g)}s) and flashes when it's time to rotate. Keep this screen open and unlocked during the game — it won't run if the app is backgrounded or the phone is locked.</p>
+      <button class="btn gold full" style="margin-top:8px;" onclick="startShiftTimer()">Start Timer — ${shiftLabel}</button>
+    </div>
+  `;
+}
+
 function liveGameViewHtml(){
   const g = State.games[State.activeGameDate];
   if(!g){
@@ -1883,6 +2034,8 @@ function liveGameViewHtml(){
       <p class="muted" style="text-align:center;margin-top:8px;">Half 1: ${h1.us}–${h1.opp} &nbsp;·&nbsp; Half 2: ${h2.us}–${h2.opp}</p>
       ${g.liveGame.finalized ? `<button class="btn secondary full" style="margin-top:14px;" onclick="editGame()">Edit Game</button>` : ''}
     </div>
+
+    ${g.liveGame.finalized ? '' : matchTimerCardHtml(g)}
 
     ${g.liveGame.finalized ? '' : `
     <div class="card">
